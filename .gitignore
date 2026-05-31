@@ -1,0 +1,63 @@
+# Internal strategy, never published
+.private/
+
+# Conference slides / personal materials in this scratch folder
+*.pptx
+*.key
+*.pdf
+
+# Local agent / tooling state
+.claude/
+
+# Python build / venv
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dist/
+
+# Go
+*.exe
+*.test
+*.out
+go.sum.bak
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

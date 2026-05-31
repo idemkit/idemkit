@@ -1,0 +1,81 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "idemkit"
+version = "0.1.0"
+description = "Idempotent execution for Python: retry-safe, crash-safe HTTP idempotency for FastAPI/Starlette (one core also designed for queue and AI tool-call dedup)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{name = "Violetta Pidvolotska"}]
+keywords = [
+    "idempotency", "idempotent", "idempotency-key", "deduplication", "dedup",
+    "exactly-once", "effectively-once", "retry", "retry-safe", "crash-recovery",
+    "http", "asgi", "fastapi", "starlette", "middleware", "webhook",
+    "redis", "postgres", "race-safe", "concurrency",
+    "queue", "consumer", "llm", "agent", "tool-calls",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+redis = ["redis>=5.0"]
+postgres = ["asyncpg>=0.29"]
+asgi = ["starlette>=0.30"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "anyio>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "httpx>=0.27",
+    "starlette>=0.30",
+    "redis>=5.0",
+    "fakeredis[lua]>=2.20",
+    "asyncpg>=0.29",
+]
+
+[project.scripts]
+idemkit = "idemkit.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/idemkit/idemkit"
+Specification = "https://github.com/idemkit/idemkit/blob/main/spec/idemkit-unified-spec.md"
+Issues = "https://github.com/idemkit/idemkit/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["idemkit"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*", "fakeredis", "fakeredis.*"]
+ignore_missing_imports = true
