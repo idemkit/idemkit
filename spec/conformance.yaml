@@ -1,0 +1,475 @@
+# idemkit conformance test vectors — HTTP, queue, and AI tool-call surfaces
+#
+# Language-neutral test scenarios for the three idemkit surfaces. An
+# implementation is idemkit-spec-compatible for a surface if it produces the
+# expected behavior for every scenario marked `level: required` against at least
+# one production backend (Redis or PostgreSQL):
+#
+#   - HTTP            (Appendix A) — the `scenarios` list below.
+#   - Queue consumer  (spec §7.4)  — the `queue_scenarios` list below.
+#   - AI tool call    (spec §8.4)  — the `ai_tool_scenarios` list below.
+#
+# The shared backend-Protocol vectors (atomic claim, fencing, lease reclaim,
+# in-flight wait, TTL, lease renewal) are implemented as a runnable suite in
+# `idemkit/conformance/` (spec §11.1) that any backend can point at itself.
+#
+# Schema is intentionally simple; a conformance runner translates each scenario
+# into framework-specific test calls.
+
+version: 0.2-draft           # version of this vector file
+spec: idemkit-unified-spec.md
+surfaces: [http, queue, ai_tool]
+
+# ---------------------------------------------------------------------------
+# HTTP surface (Appendix A)
+# ---------------------------------------------------------------------------
+scenarios:
+
+  - id: basic-replay
+    level: required
+    description: >
+      Second request with the same key and payload returns the first
+      response, with Idempotency-Replayed: true.
+    steps:
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K1 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: true
+          status: 201
+          headers_absent: [Idempotency-Replayed]
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K1 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: false
+          status: 201
+          headers_present:
+            Idempotency-Replayed: 'true'
+
+  - id: payload-mismatch
+    level: required
+    description: >
+      Same key, different payload returns 422 with the payload-mismatch
+      problem details type. The stored response is NEVER replayed.
+    steps:
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K2 }
+          body: '{"name": "x"}'
+        expect: { handler_called: true, status: 201 }
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K2 }
+          body: '{"name": "y"}'
+        expect:
+          handler_called: false
+          status: 422
+          problem_type: urn:idemkit:payload-mismatch
+
+  - id: concurrent-same-key-exactly-once
+    level: required
+    description: >
+      N concurrent requests with the same key and payload execute the
+      handler exactly once; all callers receive the same response.
+    parallel_count: 50
+    request:
+      method: POST
+      path: /resources
+      headers: { Idempotency-Key: K3 }
+      body: '{"name": "x"}'
+    expect:
+      total_handler_calls: 1
+      all_responses_identical: true
+      replayed_count: 49
+
+  - id: in-flight-wait-then-replay
+    level: required
+    description: >
+      Second request arrives while first is in-flight; waits for completion;
+      receives the replayed response.
+    sequence:
+      - id: r1
+        request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K4 }
+          body: '{"name": "x"}'
+          handler_delay_ms: 500
+      - id: r2
+        start_after_ms: 100
+        request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K4 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: false
+          status: 201
+          headers_present:
+            Idempotency-Replayed: 'true'
+
+  - id: in-flight-wait-timeout
+    level: required
+    description: >
+      In-flight wait exhausted returns 423 (default) or 409 (compat_mode=stripe)
+      with the in-progress problem details type and Retry-After header.
+    config:
+      wait_timeout_ms: 200
+    sequence:
+      - id: r1
+        request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K5 }
+          body: '{"name": "x"}'
+          handler_delay_ms: 5000
+      - id: r2
+        start_after_ms: 50
+        request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K5 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: false
+          status: 423
+          problem_type: urn:idemkit:in-progress
+          headers_present_any: [Retry-After]
+
+  - id: crash-recovery-lease-expiry
+    level: required
+    description: >
+      Process death mid-flight, lease expires, next request reclaims and
+      executes the handler.
+    config:
+      lease_ttl_ms: 300
+    steps:
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K6 }
+          body: '{"name": "x"}'
+        simulate: process_crash_after_claim
+      - wait_ms: 600
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K6 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: true
+          status: 201
+
+  - id: 5xx-not-cached-by-default
+    level: required
+    description: >
+      Handler returns 500; response is not cached; retry executes the
+      handler again. Caching a transient error would block every retry,
+      so 5xx is never cached by default.
+    steps:
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K7 }
+          body: '{"name": "x"}'
+          handler_response: { status: 500 }
+        expect: { handler_called: true, status: 500 }
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K7 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: true
+          status: 201
+
+  - id: cross-tenant-isolation
+    level: required
+    description: >
+      Same idempotency key from different caller_identity values do NOT
+      collide. Closes the most-reported security issue in this category.
+    steps:
+      - request:
+          method: POST
+          path: /resources
+          caller_identity: tenant-A:user-1
+          headers: { Idempotency-Key: K8 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: true
+          status: 201
+          body_contains: tenant-A
+      - request:
+          method: POST
+          path: /resources
+          caller_identity: tenant-B:user-2
+          headers: { Idempotency-Key: K8 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: true
+          status: 201
+          body_contains: tenant-B
+          headers_absent: [Idempotency-Replayed]
+
+  - id: missing-key-when-required
+    level: required
+    description: >
+      Mutating request without Idempotency-Key, when require_key_for_mutations
+      is enabled, returns 400 with the missing-key problem details type.
+    config: { require_key_for_mutations: true }
+    request:
+      method: POST
+      path: /resources
+      body: '{"name": "x"}'
+    expect:
+      handler_called: false
+      status: 400
+      problem_type: urn:idemkit:missing-key
+
+  - id: response-headers-preserved
+    level: required
+    description: >
+      Replayed response preserves safe response headers (Location, ETag),
+      strips unsafe headers (Set-Cookie, Authorization), and adds the
+      replay indicator.
+    steps:
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K10 }
+          body: '{"name": "x"}'
+          handler_response:
+            status: 201
+            headers:
+              Location: /resources/abc123
+              ETag: '"v1"'
+              Set-Cookie: session=secret-value
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K10 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: false
+          status: 201
+          headers_present:
+            Location: /resources/abc123
+            ETag: '"v1"'
+            Idempotency-Replayed: 'true'
+          headers_absent: [Set-Cookie]
+
+  - id: corrupt-record-treated-as-absent
+    level: required
+    description: >
+      A stored record that fails to deserialize MUST be treated as ABSENT,
+      not as a 500. The next request executes the handler.
+    steps:
+      - inject_corrupt_record:
+          effective_key_for:
+            method: POST
+            path: /resources
+            idempotency_key: K11
+            body: '{"name": "x"}'
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K11 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: true
+          status: 201
+          emits_event: idempotency.corrupt_record
+
+  - id: body-size-exceeded-bypass
+    level: required
+    description: >
+      Response exceeding max cacheable size is delivered to the client but
+      not cached. Replay header indicates the bypass reason. Critically,
+      enforcement counts streamed bytes — Content-Length cannot be trusted.
+    config: { max_body_bytes: 1024 }
+    steps:
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K12 }
+          body: '{"name": "x"}'
+          handler_response:
+            status: 200
+            body_bytes: 2048
+            content_length_header: absent  # simulate chunked / HTTP/2
+        expect:
+          handler_called: true
+          status: 200
+          headers_present:
+            Idempotency-Replay-Unavailable: size-exceeded
+      - request:
+          method: POST
+          path: /resources
+          headers: { Idempotency-Key: K12 }
+          body: '{"name": "x"}'
+        expect:
+          handler_called: true  # not replayed — was not cached
+
+# ---------------------------------------------------------------------------
+# Queue consumer surface (spec §7.4)
+# ---------------------------------------------------------------------------
+# The consumer reads a broker dedup id and a visibility timeout; the lease is
+# derived from, and kept strictly shorter than, that visibility timeout, renewed
+# by a heartbeat while the handler runs. dispatch() returns ack | retry.
+queue_scenarios:
+
+  - id: queue-at-least-once-dedup
+    level: required
+    description: >
+      The same dedup id delivered N times executes the handler's side effect
+      exactly once; every delivery is acked (first runs, the rest are skipped).
+    steps:
+      - deliver: { dedup_id: Q1, times: 5 }
+        expect:
+          total_handler_calls: 1
+          all_acked: true
+
+  - id: queue-concurrent-redelivery
+    level: required
+    description: >
+      N consumers in a group receive the same message simultaneously. Exactly
+      one executes; the rest decline without running (they replay or leave it
+      for redelivery), via the atomic claim.
+    parallel_consumers: 8
+    deliver: { dedup_id: Q2 }
+    expect:
+      total_handler_calls: 1
+
+  - id: queue-crash-recovery
+    level: required
+    description: >
+      A consumer claims then crashes (no ack, no complete). After the lease
+      expires, the redelivery reclaims and processes exactly once; the zombie's
+      late completion is fenced out.
+    steps:
+      - deliver: { dedup_id: Q3 }
+        simulate: consumer_crash_after_claim
+        config: { lease_ttl_seconds: 0.2 }
+      - wait_ms: 400
+      - deliver: { dedup_id: Q3 }
+        expect:
+          handler_called: true
+          zombie_completion_rejected: true
+
+  - id: queue-lease-shorter-than-visibility
+    level: required
+    description: >
+      A configuration with lease_ttl >= visibility_timeout is rejected at
+      construction (a lease at/above the visibility window lets a redelivery
+      race a still-running handler).
+    config: { visibility_timeout_seconds: 10, lease_ttl_seconds: 10 }
+    expect:
+      construction_error: true
+
+  - id: queue-poison-dlq
+    level: required
+    description: >
+      A handler that always raises is retried up to max_attempts, then
+      on_exhausted fires exactly once and the message is not retried further.
+    config: { max_attempts: 3 }
+    deliver: { dedup_id: Q5, until_acked: true }
+    expect:
+      total_handler_calls: 3
+      on_exhausted_calls: 1
+      finally_acked: true
+
+  - id: queue-result-bearing-replay
+    level: required
+    description: >
+      A result-bearing handler's return value is replayed on redelivery without
+      re-executing the handler.
+    config: { result_bearing: true }
+    steps:
+      - deliver: { dedup_id: Q6 }
+        expect: { handler_called: true, result_present: true }
+      - deliver: { dedup_id: Q6 }
+        expect: { handler_called: false, result_matches_first: true }
+
+# ---------------------------------------------------------------------------
+# AI / LLM tool-call surface (spec §8.4)
+# ---------------------------------------------------------------------------
+# The decorator keys on (tool, version, selected-args | explicit-key, caller).
+# A result codec serializes the return value (JSON by default), and the lease is
+# renewed by a heartbeat while the tool runs.
+ai_tool_scenarios:
+
+  - id: tool-retry-dedup
+    level: required
+    description: >
+      The same tool with the same selected args called N times runs the side
+      effect once; later calls return the cached result.
+    tool: { key_fields: [origin, destination] }
+    steps:
+      - call: { args: { origin: SFO, destination: JFK }, times: 5 }
+        expect:
+          total_executions: 1
+          all_results_identical: true
+
+  - id: tool-arg-normalization
+    level: required
+    description: >
+      Calls differing only in a field that is NOT a key field (e.g. request_id)
+      dedupe together; calls differing in a key field do not.
+    tool: { key_fields: [origin, destination] }
+    steps:
+      - call: { args: { origin: SFO, destination: JFK, request_id: r1 } }
+        expect: { executed: true }
+      - call: { args: { origin: SFO, destination: JFK, request_id: r2 } }
+        expect: { executed: false, replayed: true }
+      - call: { args: { origin: SFO, destination: LAX, request_id: r3 } }
+        expect: { executed: true }
+
+  - id: tool-concurrent-calls
+    level: required
+    description: >
+      N concurrent identical calls -> one execution; the rest wait and replay.
+    tool: { key_fields: [x] }
+    parallel_calls: 10
+    call: { args: { x: v } }
+    expect:
+      total_executions: 1
+
+  - id: tool-crash-recovery
+    level: required
+    description: >
+      A tool that crashes mid-call releases the claim so a retry re-runs once.
+    tool: { key_fields: [x] }
+    steps:
+      - call: { args: { x: v }, simulate: raise }
+        expect: { raised: true }
+      - call: { args: { x: v } }
+        expect: { executed: true }
+
+  - id: tool-unserializable-result-fails-closed
+    level: required
+    description: >
+      A non-JSON result with the JSON codec surfaces an error rather than
+      silently caching, and an immediate retry does NOT re-run the side effect
+      (the claim is held until the lease expires).
+    tool: { key_fields: [x], result_codec: json }
+    steps:
+      - call: { args: { x: v }, returns: non_serializable }
+        expect: { error_raised: true, cached: false }
+      - call: { args: { x: v } }
+        expect: { conflict: true, executed: false }
+
+  - id: tool-pickle-opt-in-warns
+    level: required
+    description: >
+      Enabling the pickle result codec emits a security warning (it is an RCE
+      vector on decode).
+    tool: { result_codec: pickle }
+    expect:
+      security_warning_emitted: true
