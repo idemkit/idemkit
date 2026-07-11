@@ -20,7 +20,7 @@ from .fakes import FailingBackend
 def _engine(*, on_storage_error: str) -> tuple[IdempotencyEngine, list[IdempotencyEvent]]:
     events: list[IdempotencyEvent] = []
     config = IdempotencyConfig(
-        scope_optional=True,
+        scope_mode="single_tenant",
         on_storage_error=on_storage_error,  # type: ignore[arg-type]
         event_handlers=[events.append],
     )

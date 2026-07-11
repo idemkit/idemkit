@@ -19,7 +19,7 @@ def _make_engine(**config_overrides) -> tuple[IdempotencyEngine, list[Idempotenc
     """
     events: list[IdempotencyEvent] = []
     config = IdempotencyConfig(
-        scope_optional=True,  # tests don't set up auth
+        scope_mode="single_tenant",  # tests don't set up auth
         event_handlers=[events.append],
         **config_overrides,
     )
@@ -277,7 +277,7 @@ async def test_storage_error_during_wait_respects_policy() -> None:
     """A backend failure mid-wait MUST map to on_storage_error, not a 500."""
     backend = InMemoryBackend()
     config = IdempotencyConfig(
-        scope_optional=True,
+        scope_mode="single_tenant",
         on_storage_error="fail_closed",
     )
     engine = IdempotencyEngine(backend, config)

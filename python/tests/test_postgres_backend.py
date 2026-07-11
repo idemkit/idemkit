@@ -215,7 +215,7 @@ async def test_pg_vacuum_removes_expired_records(backend: PostgresBackend) -> No
 
     # Vacuum with a 0-second TTL deletes anything completed in the past
     assert PG_URL is not None
-    n_removed = await pg_vacuum(PG_URL, completed_ttl_seconds=0.0)
+    n_removed = await pg_vacuum(PG_URL, expires_after_seconds=0.0)
     assert n_removed >= 1  # at least our record (other tests may have left some)
 
     # Re-claim should be NEW now

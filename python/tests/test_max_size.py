@@ -69,7 +69,7 @@ async def test_max_size_does_not_block_already_existing_keys() -> None:
 
 async def test_claim_succeeds_after_record_expires() -> None:
     """Once a COMPLETED record expires (TTL elapsed), space is freed."""
-    backend = InMemoryBackend(max_size=2, default_completed_ttl_seconds=30.0)
+    backend = InMemoryBackend(max_size=2, default_expires_after_seconds=30.0)
 
     # Fill with one CLAIMED + one COMPLETED whose TTL is short
     await backend.claim(
@@ -90,7 +90,7 @@ async def test_claim_succeeds_after_record_expires() -> None:
         response_status=200,
         response_headers={},
         response_body=b"x",
-        completed_ttl_seconds=0.05,  # 50 ms
+        expires_after_seconds=0.05,  # 50 ms
     )
 
     # Now full at 2/2

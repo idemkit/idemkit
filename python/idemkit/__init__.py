@@ -8,9 +8,14 @@ from idemkit.adapters.asgi import IdempotencyMiddleware
 from idemkit.backends.memory import InMemoryBackend, ManualClock
 from idemkit.core.exceptions import (
     ConfigurationError,
+    IdempotencyConflict,
     IdempotencyError,
+    IdempotencyKeyMissing,
+    PayloadMismatch,
     StorageError,
+    StorageUnavailable,
 )
+from idemkit.core.policy import IdempotencyPolicy
 from idemkit.core.state import Decision
 
 # Every surface is configured with plain keyword arguments — there is no public
@@ -23,19 +28,24 @@ __all__ = [
     "ConsumerResult",
     "Decision",
     "Idempotency",
+    "IdempotencyConflict",
     "IdempotencyError",
+    "IdempotencyKeyMissing",
     "IdempotencyMiddleware",
+    "IdempotencyPolicy",
     "IdempotentConsumer",
     "InMemoryBackend",
     "ManualClock",
+    "PayloadMismatch",
     "PostgresBackend",
     "RedisBackend",
     "StorageError",
+    "StorageUnavailable",
+    "WSGIIdempotencyMiddleware",
     "__version__",
+    "idempotency_problem_handler",
     "idempotent",
     "idempotent_sync",
-    "idempotent_tool",       # deprecated alias of idempotent
-    "idempotent_tool_sync",  # deprecated alias of idempotent_sync
 ]
 
 
@@ -50,10 +60,16 @@ def __getattr__(name: str):  # type: ignore[no-untyped-def]
     if name == "Idempotency":
         from idemkit.adapters.route import Idempotency
         return Idempotency
+    if name == "idempotency_problem_handler":
+        from idemkit.adapters.route import idempotency_problem_handler
+        return idempotency_problem_handler
+    if name == "WSGIIdempotencyMiddleware":
+        from idemkit.adapters.wsgi import WSGIIdempotencyMiddleware
+        return WSGIIdempotencyMiddleware
     if name in ("IdempotentConsumer", "ConsumerAction", "ConsumerResult"):
         from idemkit.adapters import queue
         return getattr(queue, name)
-    if name in ("idempotent", "idempotent_sync", "idempotent_tool", "idempotent_tool_sync"):
+    if name in ("idempotent", "idempotent_sync"):
         from idemkit.adapters import ai
         return getattr(ai, name)
     raise AttributeError(f"module 'idemkit' has no attribute {name!r}")

@@ -46,6 +46,7 @@ from idemkit.core.codecs import JsonResultCodec, ResultCodec, SideEffectCodec
 from idemkit.core.events import EventEmitter, EventHandler
 from idemkit.core.exceptions import ConfigurationError, StorageError
 from idemkit.core.fingerprint import compose_key
+from idemkit.core.policy import UNSET, IdempotencyPolicy, pick
 from idemkit.core.runner import IdempotentCore, RunStatus, StoredResult
 from idemkit.core.sync_bridge import register_closable, run_sync
 
@@ -132,22 +133,35 @@ class IdempotentConsumer:
         key: Callable[[Any], str],
         visibility_timeout_seconds: float,
         scope: Callable[[Any], tuple[str, ...] | str | None] = lambda _m: (),
-        lease_ttl_seconds: float | None = None,
+        lease_ttl_seconds: float | None = UNSET,
         max_attempts: int = 5,
         on_exhausted: Callable[[Any, BaseException | None], Awaitable[None] | None]
         | None = None,
         receive_count: Callable[[Any], int | None] | None = None,
         attempt_store: AttemptStore | None = None,
-        result_bearing: bool = False,
+        cache_result: bool = False,
         result_codec: ResultCodec[Any, Any] | None = None,
-        completed_ttl_seconds: float = 86_400.0,
-        wait_timeout_seconds: float = 5.0,
-        on_storage_error: Literal["fail_closed", "fail_open"] = "fail_closed",
-        use_local_cache: bool = False,
-        local_cache_max_items: int = 1024,
-        event_handlers: list[EventHandler] | None = None,
+        expires_after_seconds: float = UNSET,
+        wait_timeout_seconds: float = UNSET,
+        on_storage_error: Literal["fail_closed", "fail_open"] = UNSET,
+        use_local_cache: bool = UNSET,
+        local_cache_max_items: int = UNSET,
+        event_handlers: list[EventHandler] | None = UNSET,
+        config: IdempotencyPolicy | None = None,
         handler: Callable[[Any], Any] | None = None,
     ) -> None:
+        # A reusable IdempotencyPolicy (config=) supplies core-policy defaults; an
+        # explicit keyword above still overrides it for this consumer.
+        lease_ttl_seconds = pick(lease_ttl_seconds, config, "lease_ttl_seconds", None)
+        expires_after_seconds = pick(
+            expires_after_seconds, config, "expires_after_seconds", 86_400.0
+        )
+        wait_timeout_seconds = pick(wait_timeout_seconds, config, "wait_timeout_seconds", 5.0)
+        on_storage_error = pick(on_storage_error, config, "on_storage_error", "fail_closed")
+        use_local_cache = pick(use_local_cache, config, "use_local_cache", False)
+        local_cache_max_items = pick(local_cache_max_items, config, "local_cache_max_items", 1024)
+        event_handlers = list(pick(event_handlers, config, "event_handlers", None) or [])
+
         # Lease vs visibility timeout (§7.2 #1): the lease MUST be shorter than
         # the broker's visibility timeout, or a redelivery can race a handler
         # that is still legitimately running.
@@ -170,8 +184,8 @@ class IdempotentConsumer:
         self.max_attempts = max_attempts
         self.on_exhausted = on_exhausted
         self.receive_count = receive_count
-        self.completed_ttl_seconds = completed_ttl_seconds
-        self._result_bearing = result_bearing
+        self.expires_after_seconds = expires_after_seconds
+        self._cache_result = cache_result
         self._backend = backend
         self._handler: Callable[[Any], Any] | None = None
         if handler is not None:
@@ -187,7 +201,7 @@ class IdempotentConsumer:
 
         if result_codec is not None:
             self._codec: ResultCodec[Any, Any] = result_codec
-        elif result_bearing:
+        elif cache_result:
             self._codec = JsonResultCodec()
         else:
             self._codec = SideEffectCodec()
@@ -200,7 +214,7 @@ class IdempotentConsumer:
             on_storage_error=on_storage_error,
             lease_ttl_seconds=lease_ttl_seconds,
             wait_timeout_seconds=wait_timeout_seconds,
-            completed_ttl_seconds=completed_ttl_seconds,
+            expires_after_seconds=expires_after_seconds,
             use_local_cache=use_local_cache,
             local_cache_max_items=local_cache_max_items,
         )
@@ -252,7 +266,7 @@ class IdempotentConsumer:
             # doesn't stall the loop (and the heartbeat can keep renewing).
             return await asyncio.to_thread(handler, message)
 
-        encode = self._codec.encode if self._result_bearing else None
+        encode = self._codec.encode if self._cache_result else None
 
         try:
             outcome = await self.core.run_once(
@@ -332,10 +346,10 @@ class IdempotentConsumer:
         # enforced even when (a) is configured but returned None this delivery.
         if isinstance(self._attempt_store, InMemoryAttemptStore):
             self._warn_inprocess_attempts()
-        return await self._attempt_store.incr(dedup_id, self.completed_ttl_seconds)
+        return await self._attempt_store.incr(dedup_id, self.expires_after_seconds)
 
     def _decode_result(self, stored: StoredResult | None) -> Any:
-        if not self._result_bearing or stored is None:
+        if not self._cache_result or stored is None:
             return None
         return self._codec.decode(stored)
 

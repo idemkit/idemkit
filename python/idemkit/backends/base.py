@@ -53,7 +53,7 @@ class IdempotencyBackend(Protocol):
         response_status: int,
         response_headers: dict[str, str],
         response_body: bytes,
-        completed_ttl_seconds: float,
+        expires_after_seconds: float,
     ) -> bool:
         """Conditional transition CLAIMED → COMPLETED, spec §4.1.
 

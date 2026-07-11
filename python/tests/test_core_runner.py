@@ -382,3 +382,24 @@ async def test_complete_write_failure_holds_claim(backend) -> None:
     again = await core.decide(key, "fp")
     assert again.outcome is CoreOutcome.CONFLICT
     assert again.claim_token is None
+
+
+async def test_local_cache_bounded_by_max_items(backend) -> None:
+    """The in-process LRU cache never grows past local_cache_max_items.
+
+    The local cache is populated on a replay (not on first execution), so each key
+    is run twice: once to execute, once to replay and cache it.
+    """
+    core = _core(backend, use_local_cache=True, local_cache_max_items=2)
+
+    for i in range(4):
+        key = _k(f"lru-{i}")
+
+        async def handler(v: int = i) -> StoredResult:
+            return StoredResult(blob=str(v).encode())
+
+        await core.run_once(key, "fp", handler)   # execute
+        await core.run_once(key, "fp", handler)   # replay -> caches locally
+
+    # Four distinct keys cached, cap is 2 → the two oldest were evicted.
+    assert len(core._local_cache) == 2

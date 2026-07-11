@@ -1,0 +1,43 @@
+# Local services for the idemkit end-to-end tests.
+#
+#   docker compose -f tests/e2e/docker-compose.yml up -d
+#   pytest -m e2e
+#   docker compose -f tests/e2e/docker-compose.yml down
+#
+# Everything runs locally, no cloud accounts. Redpanda speaks the Kafka protocol,
+# localstack speaks the SQS API.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: test
+    ports: ["55432:5432"]
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sqs
+    ports: ["4566:4566"]
+
+  rabbitmq:
+    image: rabbitmq:3-alpine
+    ports: ["5672:5672"]
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+    ports: ["9092:9092"]

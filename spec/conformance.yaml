@@ -390,7 +390,7 @@ queue_scenarios:
     description: >
       A result-bearing handler's return value is replayed on redelivery without
       re-executing the handler.
-    config: { result_bearing: true }
+    config: { cache_result: true }
     steps:
       - deliver: { dedup_id: Q6 }
         expect: { handler_called: true, result_present: true }

@@ -310,7 +310,7 @@ class RedisBackend:
         response_status: int,
         response_headers: dict[str, str],
         response_body: bytes,
-        completed_ttl_seconds: float,
+        expires_after_seconds: float,
     ) -> bool:
         body_b64 = base64.b64encode(response_body).decode("ascii")
         try:
@@ -323,7 +323,7 @@ class RedisBackend:
                     response_status,
                     json.dumps(response_headers),
                     body_b64,
-                    int(completed_ttl_seconds * 1000),
+                    int(expires_after_seconds * 1000),
                     NOTIFY_CHANNEL,
                 ],
             )

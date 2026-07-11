@@ -366,9 +366,9 @@ class PostgresBackend:
         response_status: int,
         response_headers: dict[str, str],
         response_body: bytes,
-        completed_ttl_seconds: float,
+        expires_after_seconds: float,
     ) -> bool:
-        completed_ms = int(completed_ttl_seconds * 1000)
+        completed_ms = int(expires_after_seconds * 1000)
         await self._ensure_pool()
         try:
             async with self._pool.acquire() as conn:
@@ -605,7 +605,7 @@ async def init_pg(database_url: str) -> None:
 async def pg_vacuum(
     database_url: str,
     *,
-    completed_ttl_seconds: float = 86_400.0,
+    expires_after_seconds: float = 86_400.0,
     lease_grace_seconds: float = 60.0,
 ) -> int:
     """Delete expired records. Returns the number of rows removed."""
@@ -625,7 +625,7 @@ async def pg_vacuum(
                OR (state = 'CLAIMED'
                    AND lease_until + ($2 || ' seconds')::INTERVAL < NOW())
             """,
-            str(int(completed_ttl_seconds)),
+            str(int(expires_after_seconds)),
             str(int(lease_grace_seconds)),
         )
         # result is like "DELETE n"

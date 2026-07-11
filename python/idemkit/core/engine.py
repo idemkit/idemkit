@@ -95,7 +95,7 @@ class IdempotencyEngine:
             on_storage_error=config.on_storage_error,
             lease_ttl_seconds=config.lease_ttl_seconds,
             wait_timeout_seconds=config.wait_timeout_seconds,
-            completed_ttl_seconds=config.completed_ttl_seconds,
+            expires_after_seconds=config.expires_after_seconds,
             fingerprint_version=FINGERPRINT_VERSION,
             use_local_cache=config.use_local_cache,
             local_cache_max_items=config.local_cache_max_items,
