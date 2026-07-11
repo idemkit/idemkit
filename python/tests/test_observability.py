@@ -19,7 +19,7 @@ from idemkit.core.state import Decision
 def _engine(**overrides) -> tuple[IdempotencyEngine, list[IdempotencyEvent]]:
     events: list[IdempotencyEvent] = []
     config = IdempotencyConfig(
-        scope_optional=True,
+        scope_mode="single_tenant",
         event_handlers=[events.append],
         **overrides,
     )
@@ -96,7 +96,7 @@ async def test_broken_event_handler_does_not_crash_request() -> None:
         raise RuntimeError("observability blew up")
 
     config = IdempotencyConfig(
-        scope_optional=True,
+        scope_mode="single_tenant",
         event_handlers=[broken_handler, events.append],  # broken first, then collector
     )
     engine = IdempotencyEngine(InMemoryBackend(), config)

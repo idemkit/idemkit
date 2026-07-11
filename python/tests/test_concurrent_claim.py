@@ -66,7 +66,7 @@ async def test_complete_with_correct_token_transitions_to_completed() -> None:
         response_status=201,
         response_headers={"Content-Type": "application/json"},
         response_body=b'{"id": "abc"}',
-        completed_ttl_seconds=3600.0,
+        expires_after_seconds=3600.0,
     )
     assert ok is True
 
@@ -105,7 +105,7 @@ async def test_complete_with_wrong_token_is_rejected() -> None:
         response_status=200,
         response_headers={},
         response_body=b"x",
-        completed_ttl_seconds=3600.0,
+        expires_after_seconds=3600.0,
     )
     assert ok is False, "complete with wrong claim_token must return False"
 
@@ -194,7 +194,7 @@ async def test_wait_for_completion_returns_completed_record() -> None:
             response_status=200,
             response_headers={},
             response_body=b"hello",
-            completed_ttl_seconds=3600.0,
+            expires_after_seconds=3600.0,
         )
 
     waited, _ = await asyncio.gather(waiter(), completer())

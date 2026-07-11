@@ -115,7 +115,7 @@ def test_pg_vacuum_removes_expired_records() -> None:
     key = f"vacuum-cli-{uuid.uuid4().hex}"
     asyncio.run(_insert_expired_completed(key))
 
-    rc, output = _run_cli(["pg-vacuum", PG_URL, "--completed-ttl-seconds", "60"])
+    rc, output = _run_cli(["pg-vacuum", PG_URL, "--expires-after-seconds", "60"])
     assert rc == 0
     assert "vacuumed" in output.lower()
     assert not asyncio.run(_row_exists(key))

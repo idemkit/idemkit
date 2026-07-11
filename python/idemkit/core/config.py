@@ -72,7 +72,7 @@ class IdempotencyConfig:
     # ── Core policy ──
     lease_ttl_seconds: float = 30.0
     wait_timeout_seconds: float = 10.0
-    completed_ttl_seconds: float = 86_400.0
+    expires_after_seconds: float = 86_400.0
     on_storage_error: Literal["fail_closed", "fail_open"] = "fail_closed"
     use_local_cache: bool = False
     local_cache_max_items: int = 1024
@@ -119,14 +119,13 @@ class IdempotencyConfig:
     body_fingerprint: BodyFingerprint | None = None
 
     # Pluggable extraction (§4.7) and cross-tenant scoping (§4.6).
-    # With no scope, idemkit runs in SINGLE-TENANT mode (all callers
-    # share one namespace) and logs a loud warning. Set scope for
-    # multi-tenant isolation. scope_optional=True acknowledges
-    # single-tenant and silences the warning. strict_scope=True makes a
-    # missing scope a hard ConfigurationError (for CI/production gates).
+    # With no `scope`, idemkit runs in SINGLE-TENANT mode (all callers share one
+    # namespace). scope_mode picks what happens then:
+    #   "warn"          (default) run single-tenant and log a loud warning;
+    #   "single_tenant" run single-tenant, no warning (you acknowledged it);
+    #   "strict"        raise ConfigurationError if no scope (CI/production gate).
     scope: CallerIdentityExtractor | None = None
-    scope_optional: bool = False
-    strict_scope: bool = False
+    scope_mode: Literal["warn", "single_tenant", "strict"] = "warn"
     key: KeyExtractor | None = None
 
     # PII redaction (§4.14)
@@ -146,22 +145,28 @@ class IdempotencyConfig:
                 f"got {self.compat_mode!r}."
             )
 
+        if self.scope_mode not in ("warn", "single_tenant", "strict"):
+            raise ConfigurationError(
+                f"idemkit: scope_mode must be 'warn', 'single_tenant', or "
+                f"'strict', got {self.scope_mode!r}."
+            )
+
         # Cross-tenant scoping (§4.6). Default: single-tenant + loud warning.
         if self.scope is None:
-            if self.strict_scope:
+            if self.scope_mode == "strict":
                 raise ConfigurationError(
-                    "idemkit: strict_scope=True requires a `scope` "
-                    "extractor. Provide one, or drop strict_scope to run in "
-                    "single-tenant mode. See spec §4.6."
+                    "idemkit: scope_mode='strict' requires a `scope` extractor. "
+                    "Provide one, or use scope_mode='single_tenant' to run "
+                    "single-tenant on purpose. See spec §4.6."
                 )
-            if not self.scope_optional:
+            if self.scope_mode == "warn":
                 _logger.warning(
-                    "idemkit: SINGLE-TENANT MODE — no `scope` configured, so "
-                    "ALL callers share one idempotency namespace. If your service has "
+                    "idemkit: SINGLE-TENANT MODE: no `scope` configured, so ALL "
+                    "callers share one idempotency namespace. If your service has "
                     "more than one user or tenant, this is a cross-tenant bug: set "
-                    "`scope`. To acknowledge single-tenant and silence this, "
-                    "set scope_optional=True; to make it a hard error, set "
-                    "strict_scope=True. See spec §4.6."
+                    "`scope`. To acknowledge single-tenant and silence this, set "
+                    "scope_mode='single_tenant'; to make it a hard error, set "
+                    "scope_mode='strict'. See spec §4.6."
                 )
 
         # Lease sanity warning (§4.8)
@@ -187,3 +192,42 @@ class IdempotencyConfig:
         if self.header_deny:
             return frozenset(h.lower() for h in self.header_deny)
         return DEFAULT_HEADER_DENY
+
+
+def resolve_http_config(config: Any, config_kwargs: dict[str, Any]) -> IdempotencyConfig:
+    """Build the HTTP config from an ``IdempotencyConfig``, a reusable
+    ``IdempotencyPolicy`` (widened with the HTTP defaults, so one policy really
+    does work on all three surfaces), or plain keyword options.
+    """
+    from idemkit.core.policy import IdempotencyPolicy
+
+    if isinstance(config, IdempotencyPolicy):
+        # A policy leaves lease/wait as None ("use the surface default"), so fill
+        # in the HTTP defaults here; HTTP-specific options ride in config_kwargs.
+        return IdempotencyConfig(
+            lease_ttl_seconds=(
+                config.lease_ttl_seconds if config.lease_ttl_seconds is not None else 30.0
+            ),
+            wait_timeout_seconds=(
+                config.wait_timeout_seconds if config.wait_timeout_seconds is not None else 10.0
+            ),
+            expires_after_seconds=config.expires_after_seconds,
+            on_storage_error=config.on_storage_error,
+            use_local_cache=config.use_local_cache,
+            local_cache_max_items=config.local_cache_max_items,
+            event_handlers=list(config.event_handlers),
+            **config_kwargs,
+        )
+    if config is None:
+        return IdempotencyConfig(**config_kwargs)
+    if config_kwargs:
+        raise TypeError(
+            "idemkit: pass either config= or keyword options, not both. "
+            f"Stray keywords: {list(config_kwargs)}"
+        )
+    if not isinstance(config, IdempotencyConfig):
+        raise TypeError(
+            "idemkit: config= must be an IdempotencyConfig or IdempotencyPolicy, "
+            f"got {type(config).__name__}."
+        )
+    return config

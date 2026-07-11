@@ -69,6 +69,7 @@ from idemkit.core.exceptions import (
     StorageUnavailable,
 )
 from idemkit.core.fingerprint import compose_key
+from idemkit.core.policy import UNSET, IdempotencyPolicy, pick
 from idemkit.core.runner import CoreOutcome, IdempotentCore
 from idemkit.core.sync_bridge import register_closable, run_sync
 
@@ -94,18 +95,6 @@ NormalizeArgs = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 ValidationFingerprint = Callable[[Mapping[str, Any]], bytes]
 
 
-def _resolve_version(version: str, tool_version: str | None) -> str:
-    """Reconcile the deprecated ``tool_version`` alias into ``version``."""
-    if tool_version is not None:
-        warnings.warn(
-            "idemkit: tool_version= is deprecated; use version=.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        return tool_version
-    return version
-
-
 def idempotent(
     *,
     backend: IdempotencyBackend,
@@ -116,14 +105,14 @@ def idempotent(
     normalize_args: NormalizeArgs | None = None,
     result_codec: Any = "json",
     strict_keys: bool = True,
-    lease_ttl_seconds: float = 60.0,
-    wait_timeout_seconds: float = 10.0,
-    on_storage_error: Literal["fail_closed", "fail_open"] = "fail_closed",
-    completed_ttl_seconds: float = 86_400.0,
-    use_local_cache: bool = False,
-    local_cache_max_items: int = 1024,
-    event_handlers: list[EventHandler] | None = None,
-    tool_version: str | None = None,  # deprecated alias of version
+    lease_ttl_seconds: float = UNSET,
+    wait_timeout_seconds: float = UNSET,
+    on_storage_error: Literal["fail_closed", "fail_open"] = UNSET,
+    expires_after_seconds: float = UNSET,
+    use_local_cache: bool = UNSET,
+    local_cache_max_items: int = UNSET,
+    event_handlers: list[EventHandler] | None = UNSET,
+    config: IdempotencyPolicy | None = None,
 ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
     """Decorate a side-effectful async function so identical calls dedupe (§8.3).
 
@@ -132,7 +121,6 @@ def idempotent(
     ``"dataclass"`` / ``"pydantic"``, a ``(to_dict, from_dict)`` pair, or any
     ``ResultCodec``. ``lease_ttl_seconds`` is renewed while the function runs (§5.3.1).
     """
-    version = _resolve_version(version, tool_version)
 
     def decorator(
         fn: Callable[..., Awaitable[Any]],
@@ -147,13 +135,17 @@ def idempotent(
             normalize_args=normalize_args,
             result_codec=result_codec,
             strict_keys=strict_keys,
-            lease_ttl_seconds=lease_ttl_seconds,
-            wait_timeout_seconds=wait_timeout_seconds,
-            on_storage_error=on_storage_error,
-            completed_ttl_seconds=completed_ttl_seconds,
-            use_local_cache=use_local_cache,
-            local_cache_max_items=local_cache_max_items,
-            event_handlers=event_handlers,
+            lease_ttl_seconds=pick(lease_ttl_seconds, config, "lease_ttl_seconds", 60.0),
+            wait_timeout_seconds=pick(wait_timeout_seconds, config, "wait_timeout_seconds", 10.0),
+            on_storage_error=pick(on_storage_error, config, "on_storage_error", "fail_closed"),
+            expires_after_seconds=pick(
+                expires_after_seconds, config, "expires_after_seconds", 86_400.0
+            ),
+            use_local_cache=pick(use_local_cache, config, "use_local_cache", False),
+            local_cache_max_items=pick(
+                local_cache_max_items, config, "local_cache_max_items", 1024
+            ),
+            event_handlers=list(pick(event_handlers, config, "event_handlers", None) or []),
         )
 
         @functools.wraps(fn)
@@ -177,14 +169,14 @@ def idempotent_sync(
     normalize_args: NormalizeArgs | None = None,
     result_codec: Any = "json",
     strict_keys: bool = True,
-    lease_ttl_seconds: float = 60.0,
-    wait_timeout_seconds: float = 10.0,
-    on_storage_error: Literal["fail_closed", "fail_open"] = "fail_closed",
-    completed_ttl_seconds: float = 86_400.0,
-    use_local_cache: bool = False,
-    local_cache_max_items: int = 1024,
-    event_handlers: list[EventHandler] | None = None,
-    tool_version: str | None = None,  # deprecated alias of version
+    lease_ttl_seconds: float = UNSET,
+    wait_timeout_seconds: float = UNSET,
+    on_storage_error: Literal["fail_closed", "fail_open"] = UNSET,
+    expires_after_seconds: float = UNSET,
+    use_local_cache: bool = UNSET,
+    local_cache_max_items: int = UNSET,
+    event_handlers: list[EventHandler] | None = UNSET,
+    config: IdempotencyPolicy | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Synchronous variant of :func:`idempotent` for non-async codebases.
 
@@ -196,7 +188,6 @@ def idempotent_sync(
     Do not call the returned function from inside a running event loop — use the
     async :func:`idempotent` there instead.
     """
-    version = _resolve_version(version, tool_version)
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         engine = _ToolEngine(
@@ -210,13 +201,17 @@ def idempotent_sync(
             result_codec=result_codec,
             strict_keys=strict_keys,
             runs_blocking=True,
-            lease_ttl_seconds=lease_ttl_seconds,
-            wait_timeout_seconds=wait_timeout_seconds,
-            on_storage_error=on_storage_error,
-            completed_ttl_seconds=completed_ttl_seconds,
-            use_local_cache=use_local_cache,
-            local_cache_max_items=local_cache_max_items,
-            event_handlers=event_handlers,
+            lease_ttl_seconds=pick(lease_ttl_seconds, config, "lease_ttl_seconds", 60.0),
+            wait_timeout_seconds=pick(wait_timeout_seconds, config, "wait_timeout_seconds", 10.0),
+            on_storage_error=pick(on_storage_error, config, "on_storage_error", "fail_closed"),
+            expires_after_seconds=pick(
+                expires_after_seconds, config, "expires_after_seconds", 86_400.0
+            ),
+            use_local_cache=pick(use_local_cache, config, "use_local_cache", False),
+            local_cache_max_items=pick(
+                local_cache_max_items, config, "local_cache_max_items", 1024
+            ),
+            event_handlers=list(pick(event_handlers, config, "event_handlers", None) or []),
         )
         register_closable(backend)
 
@@ -228,13 +223,6 @@ def idempotent_sync(
         return wrapper
 
     return decorator
-
-
-# Deprecated aliases (the surface was renamed from "AI tool" to general
-# method-level idempotency). Kept for one release; prefer `idempotent` /
-# `idempotent_sync`.
-idempotent_tool = idempotent
-idempotent_tool_sync = idempotent_sync
 
 
 class _ToolEngine:
@@ -255,7 +243,7 @@ class _ToolEngine:
         wait_timeout_seconds: float,
         on_storage_error: Literal["fail_closed", "fail_open"],
         strict_keys: bool,
-        completed_ttl_seconds: float,
+        expires_after_seconds: float,
         use_local_cache: bool,
         local_cache_max_items: int,
         event_handlers: list[EventHandler] | None,
@@ -306,7 +294,7 @@ class _ToolEngine:
             takes_var_kw = any(
                 p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
             )
-            unknown = [f for f in key_fields if f not in params]
+            unknown = [f for f in key_fields if f.split(".", 1)[0] not in params]
             if unknown and not takes_var_kw:
                 raise ConfigurationError(
                     f"idemkit: key_fields {unknown} are not parameters of tool "
@@ -323,7 +311,9 @@ class _ToolEngine:
                 # (the value-based check still runs per call on the no-selector
                 # path). Listing it deliberately is legitimate, hence a warning,
                 # not an error.
-                volatile = [f for f in key_fields if _name_looks_volatile(f)]
+                volatile = [
+                    f for f in key_fields if _name_looks_volatile(f.rsplit(".", 1)[-1])
+                ]
                 if volatile:
                     warnings.warn(
                         f"idemkit: tool {self.tool_name!r} lists volatile-looking "
@@ -357,7 +347,7 @@ class _ToolEngine:
             on_storage_error=on_storage_error,
             lease_ttl_seconds=lease_ttl_seconds,
             wait_timeout_seconds=wait_timeout_seconds,
-            completed_ttl_seconds=completed_ttl_seconds,
+            expires_after_seconds=expires_after_seconds,
             use_local_cache=use_local_cache,
             local_cache_max_items=local_cache_max_items,
         )
@@ -548,8 +538,11 @@ class _ToolEngine:
 
     def _derive_args_hash(self, arguments: Mapping[str, Any]) -> str:
         if self.key_fields is not None:
+            # A field may be a dotted path into a nested dict or object
+            # (e.g. "order.id", "customer.address.zip"), resolved against both
+            # Mapping keys and object attributes.
             selected: Mapping[str, Any] = {
-                field: arguments.get(field) for field in self.key_fields
+                field: _resolve_path(arguments, field) for field in self.key_fields
             }
         elif self.normalize_args is not None:
             selected = self.normalize_args(arguments)
@@ -638,6 +631,25 @@ def _require_annotation(return_annotation: Any, codec_name: str) -> type:
             "ResultCodec instance, or a (to_dict, from_dict) pair."
         )
     return return_annotation  # type: ignore[no-any-return]
+
+
+def _resolve_path(arguments: Mapping[str, Any], path: str) -> Any:
+    """Resolve a (possibly dotted) key-field path against the bound arguments.
+
+    ``"order.id"`` walks ``arguments["order"]`` then its ``["id"]`` (on a Mapping)
+    or ``.id`` (on an object). A missing segment yields ``None`` (the same as a
+    missing top-level argument), so a typo collapses to a stable, visible value
+    rather than raising mid-call.
+    """
+    root, _, rest = path.partition(".")
+    value: Any = arguments.get(root)
+    if not rest:
+        return value
+    for segment in rest.split("."):
+        if value is None:
+            return None
+        value = value.get(segment) if isinstance(value, Mapping) else getattr(value, segment, None)
+    return value
 
 
 def _canonical_hash(selected: Mapping[str, Any]) -> str:

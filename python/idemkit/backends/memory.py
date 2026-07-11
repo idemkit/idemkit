@@ -53,7 +53,7 @@ class ManualClock:
         clock = ManualClock()
         backend = InMemoryBackend(clock=clock)
         ...                       # claim + complete
-        clock.advance(86_401)     # past completed_ttl_seconds
+        clock.advance(86_401)     # past expires_after_seconds
         ...                       # next claim now sees the record as expired
     """
 
@@ -74,11 +74,11 @@ class InMemoryBackend:
         self,
         *,
         max_size: int = 10_000,
-        default_completed_ttl_seconds: float = 86_400.0,
+        default_expires_after_seconds: float = 86_400.0,
         clock: Callable[[], float] | None = None,
     ) -> None:
         self._max_size = max_size
-        self._default_completed_ttl = default_completed_ttl_seconds
+        self._default_completed_ttl = default_expires_after_seconds
         self._records: dict[str, StoredRecord] = {}
         self._waiters: dict[str, asyncio.Event] = {}
         self._lock = asyncio.Lock()
@@ -192,7 +192,7 @@ class InMemoryBackend:
         response_status: int,
         response_headers: dict[str, str],
         response_body: bytes,
-        completed_ttl_seconds: float,
+        expires_after_seconds: float,
     ) -> bool:
         async with self._lock:
             existing = self._records.get(effective_key)
@@ -211,7 +211,7 @@ class InMemoryBackend:
                 fingerprint_version=existing.fingerprint_version,
                 claim_token=existing.claim_token,
                 claimed_at=existing.claimed_at,
-                lease_until=now + completed_ttl_seconds,  # spec §4.8 TTL from completed_at
+                lease_until=now + expires_after_seconds,  # spec §4.8 TTL from completed_at
                 completed_at=now,
                 response_status=response_status,
                 response_headers=dict(response_headers),

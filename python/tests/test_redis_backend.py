@@ -191,7 +191,7 @@ async def test_corrupt_record_emits_corrupt_record_event(backend: RedisBackend) 
     events: list[IdempotencyEvent] = []
     engine = IdempotencyEngine(
         backend,
-        IdempotencyConfig(scope_optional=True, event_handlers=[events.append]),
+        IdempotencyConfig(scope_mode="single_tenant", event_handlers=[events.append]),
     )
     req = NeutralRequest(
         idempotency_key="K11",

@@ -38,10 +38,10 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     vacuum.add_argument("database_url", help="postgres:// URL.")
     vacuum.add_argument(
-        "--completed-ttl-seconds",
+        "--expires-after-seconds",
         type=float,
         default=86_400.0,
-        help="Records COMPLETED before (now - ttl) are deleted (default: 24h).",
+        help="Records COMPLETED before (now - this) are deleted (default: 24h).",
     )
     vacuum.add_argument(
         "--lease-grace-seconds",
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(
             pg_vacuum(
                 args.database_url,
-                completed_ttl_seconds=args.completed_ttl_seconds,
+                expires_after_seconds=args.expires_after_seconds,
                 lease_grace_seconds=args.lease_grace_seconds,
             )
         )

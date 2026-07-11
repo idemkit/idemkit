@@ -13,8 +13,9 @@ from typing import Any
 
 from idemkit import problem_details
 from idemkit.backends.base import IdempotencyBackend
-from idemkit.core.config import IdempotencyConfig
+from idemkit.core.config import IdempotencyConfig, resolve_http_config
 from idemkit.core.engine import IdempotencyEngine, NeutralRequest, NeutralResponse
+from idemkit.core.policy import IdempotencyPolicy
 
 _logger = logging.getLogger(__name__)
 
@@ -71,16 +72,10 @@ class IdempotencyMiddleware:
         app: ASGIApp,
         *,
         backend: IdempotencyBackend,
-        config: IdempotencyConfig | None = None,
+        config: IdempotencyConfig | IdempotencyPolicy | None = None,
         **config_kwargs: Any,
     ) -> None:
-        if config is None:
-            config = IdempotencyConfig(**config_kwargs)
-        elif config_kwargs:
-            raise TypeError(
-                "Provide either `config=` or kwargs, not both. "
-                f"Stray kwargs: {list(config_kwargs)}"
-            )
+        config = resolve_http_config(config, config_kwargs)
         self.app = app
         self.config = config
         self.engine = IdempotencyEngine(backend=backend, config=config)
@@ -253,7 +248,7 @@ class IdempotencyMiddleware:
 
     def _extract_caller_identity(self, scope: ASGIScope) -> str | None:
         if self.config.scope is None:
-            return None  # only reachable when scope_optional=True
+            return None  # only reachable in single-tenant mode
         request_proxy = _RequestProxy(scope, _read_headers(scope.get("headers") or []), b"")
         try:
             value = self.config.scope(request_proxy)

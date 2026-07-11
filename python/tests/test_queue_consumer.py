@@ -397,11 +397,11 @@ async def test_poison_dlq_with_attempt_store_fallback(backend) -> None:
 # ----- queue-result-bearing-replay -----
 
 
-async def test_result_bearing_replay(backend) -> None:
+async def test_cache_result_replay(backend) -> None:
     """A result-bearing handler's return value is replayed on redelivery without
     re-executing the handler."""
     calls = 0
-    consumer = _consumer(backend, result_bearing=True)
+    consumer = _consumer(backend, cache_result=True)
 
     @consumer.handle
     async def process(msg) -> dict:
@@ -424,12 +424,12 @@ async def test_result_bearing_replay(backend) -> None:
     assert calls == 1, "the handler must not re-run on the redelivery"
 
 
-async def test_result_bearing_unserializable_fails_closed(backend) -> None:
+async def test_cache_result_unserializable_fails_closed(backend) -> None:
     """A result-bearing handler whose return value isn't serializable must NOT
     cause the side effect to re-run: the result couldn't be cached, but the
     message is acked (not redelivered) and the handler runs exactly once (§5.4)."""
     calls = 0
-    consumer = _consumer(backend, result_bearing=True, wait_timeout_seconds=0.3)
+    consumer = _consumer(backend, cache_result=True, wait_timeout_seconds=0.3)
 
     @consumer.handle
     async def process(msg) -> object:

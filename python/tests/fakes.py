@@ -33,7 +33,7 @@ class FailingBackend:
         response_status: int,
         response_headers: dict[str, str],
         response_body: bytes,
-        completed_ttl_seconds: float,
+        expires_after_seconds: float,
     ) -> bool:
         raise StorageError("FailingBackend: simulated outage")
 

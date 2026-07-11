@@ -120,7 +120,7 @@ class IdempotentCore:
         on_storage_error: Literal["fail_closed", "fail_open"] = "fail_closed",
         lease_ttl_seconds: float = 30.0,
         wait_timeout_seconds: float = 10.0,
-        completed_ttl_seconds: float = 86_400.0,
+        expires_after_seconds: float = 86_400.0,
         fingerprint_version: int = 1,
         use_local_cache: bool = False,
         local_cache_max_items: int = 1024,
@@ -133,7 +133,7 @@ class IdempotentCore:
         self.on_storage_error = on_storage_error
         self.lease_ttl_seconds = lease_ttl_seconds
         self.wait_timeout_seconds = wait_timeout_seconds
-        self.completed_ttl_seconds = completed_ttl_seconds
+        self.expires_after_seconds = expires_after_seconds
         self.fingerprint_version = fingerprint_version
         self.response_hook = response_hook
         self.use_local_cache = use_local_cache
@@ -259,7 +259,7 @@ class IdempotentCore:
         effective_key: str,
         claim_token: str,
         result: StoredResult,
-        completed_ttl_seconds: float | None = None,
+        expires_after_seconds: float | None = None,
     ) -> None:
         """Store the handler's result against our claim (spec §5.2 complete).
 
@@ -268,9 +268,9 @@ class IdempotentCore:
         write and surface a lost race as ``lease_reclaimed_loss``.
         """
         ttl = (
-            completed_ttl_seconds
-            if completed_ttl_seconds is not None
-            else self.completed_ttl_seconds
+            expires_after_seconds
+            if expires_after_seconds is not None
+            else self.expires_after_seconds
         )
         # Drop any stale local entry; the next replay re-reads and re-caches with
         # the fresh result (we don't have the fingerprint here to repopulate).
@@ -282,7 +282,7 @@ class IdempotentCore:
                 response_status=result.marker,
                 response_headers=result.meta,
                 response_body=result.blob,
-                completed_ttl_seconds=ttl,
+                expires_after_seconds=ttl,
             )
         except Exception:
             # The backend died trying to persist the result, after the handler
@@ -568,7 +568,7 @@ class IdempotentCore:
             # stale result after the backend expired and re-claimed (§5.9).
             self._local_cache.move_to_end(effective_key)
             return
-        expires_at = time.monotonic() + self.completed_ttl_seconds
+        expires_at = time.monotonic() + self.expires_after_seconds
         self._local_cache[effective_key] = (fingerprint, stored, expires_at)
         self._local_cache.move_to_end(effective_key)
         while len(self._local_cache) > self.local_cache_max_items:
