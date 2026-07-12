@@ -4,12 +4,13 @@ Where ``IdempotencyMiddleware`` applies idempotency to a whole app, ``Idempotenc
 attaches it to individual endpoints with a decorator. Bind it to a backend and
 config once, then decorate the routes you want protected::
 
-    from idemkit import Idempotency, RedisBackend
+    from idemkit import HttpConfig, Idempotency, RedisBackend
 
     idem = Idempotency(
         backend=RedisBackend.from_url("redis://localhost:6379"),
-        scope=lambda req: req.state.user.id,
+        config=HttpConfig(scope=lambda req: req.state.user.id),
     )
+
 
     @app.post("/charge")
     @idem.protect
@@ -39,7 +40,7 @@ from typing import Any
 
 from idemkit.adapters.asgi import _unwrap_sf_string
 from idemkit.backends.base import IdempotencyBackend
-from idemkit.core.config import IdempotencyConfig
+from idemkit.core.config import IdempotencyConfig, resolve_http_config
 from idemkit.core.engine import (
     EngineOutcome,
     IdempotencyEngine,
@@ -54,6 +55,7 @@ from idemkit.core.exceptions import (
     PayloadMismatch,
     StorageUnavailable,
 )
+from idemkit.core.policy import HttpConfig
 
 _logger = logging.getLogger(__name__)
 
@@ -65,22 +67,13 @@ class Idempotency:
         self,
         *,
         backend: IdempotencyBackend,
-        config: IdempotencyConfig | None = None,
-        **config_kwargs: Any,
+        config: HttpConfig | IdempotencyConfig | None = None,
     ) -> None:
-        if config is None:
-            config = IdempotencyConfig(**config_kwargs)
-        elif config_kwargs:
-            raise TypeError(
-                "Provide either `config=` or kwargs, not both. "
-                f"Stray kwargs: {list(config_kwargs)}"
-            )
+        config = resolve_http_config(config)
         self.config = config
         self.engine = IdempotencyEngine(backend=backend, config=config)
 
-    def protect(
-        self, func: Callable[..., Awaitable[Any]]
-    ) -> Callable[..., Awaitable[Any]]:
+    def protect(self, func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
         """Decorate an async endpoint so duplicate requests are deduplicated."""
 
         @functools.wraps(func)
@@ -136,9 +129,7 @@ class Idempotency:
                 await self.engine.on_error(outcome.effective_key, outcome.claim_token)
                 return response
 
-            await self.engine.on_complete(
-                outcome.effective_key, outcome.claim_token, captured
-            )
+            await self.engine.on_complete(outcome.effective_key, outcome.claim_token, captured)
             return response
 
         return wrapper
@@ -162,9 +153,7 @@ class Idempotency:
             try:
                 identity = self.config.scope(request) or None
             except Exception:
-                _logger.exception(
-                    "idemkit: scope raised; treating as anonymous"
-                )
+                _logger.exception("idemkit: scope raised; treating as anonymous")
                 identity = None
 
         return NeutralRequest(
@@ -198,9 +187,7 @@ def _raise_for_reject(outcome: EngineOutcome) -> None:
             "finish within the wait timeout. Retry with bounded backoff."
         )
     elif reason == "missing_key":
-        exc = IdempotencyKeyMissing(
-            "This endpoint requires a valid Idempotency-Key header."
-        )
+        exc = IdempotencyKeyMissing("This endpoint requires a valid Idempotency-Key header.")
     elif reason == "storage_error":
         exc = StorageUnavailable(
             "The idempotency backend is unavailable and the policy is fail_closed. "
@@ -262,20 +249,16 @@ def _require_response(result: Any) -> Any:
     )
 
 
-def _capture(
-    response: Any, max_body_bytes: int
-) -> tuple[NeutralResponse | None, str | None]:
+def _capture(response: Any, max_body_bytes: int) -> tuple[NeutralResponse | None, str | None]:
     body = getattr(response, "body", None)
     if body is None:
         # No materialized body (e.g. StreamingResponse) → bypass cache.
         return None, "streaming"
     if len(body) > max_body_bytes:
         return None, "size-exceeded"
-    headers = {k: v for k, v in response.headers.items()}
+    headers = dict(response.headers.items())
     return (
-        NeutralResponse(
-            status=response.status_code, headers=headers, body=bytes(body)
-        ),
+        NeutralResponse(status=response.status_code, headers=headers, body=bytes(body)),
         None,
     )
 

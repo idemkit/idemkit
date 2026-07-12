@@ -70,10 +70,16 @@ class EngineOutcome:
     # On a reject, which case it was — so the per-route decorator can raise the
     # matching typed exception (§6.3). The app-wide middleware ignores this and
     # uses ``response`` (the problem+json), keeping Appendix A unchanged.
-    reject_reason: Literal[
-        "missing_key", "payload_mismatch", "in_progress", "storage_error",
-        "identity_unavailable",
-    ] | None = None
+    reject_reason: (
+        Literal[
+            "missing_key",
+            "payload_mismatch",
+            "in_progress",
+            "storage_error",
+            "identity_unavailable",
+        ]
+        | None
+    ) = None
 
 
 _ANON_IDENTITY = "_idemkit_anonymous"
@@ -147,15 +153,11 @@ class IdempotencyEngine:
                 )
                 return EngineOutcome(
                     kind="reject",
-                    response=_problem_to_neutral(
-                        problem_details.identity_unavailable()
-                    ),
+                    response=_problem_to_neutral(problem_details.identity_unavailable()),
                     reject_reason="identity_unavailable",
                 )
 
-        effective_key = compute_effective_key(
-            key, scope, request.method, request.path
-        )
+        effective_key = compute_effective_key(key, scope, request.method, request.path)
         if self.config.body_fingerprint is not None:
             # Selector: fingerprint exactly the bytes it returns, opaque
             # (content_type=None), so the caller fully controls what matters.
@@ -202,9 +204,7 @@ class IdempotencyEngine:
             return EngineOutcome(
                 kind="reject",
                 response=_problem_to_neutral(
-                    problem_details.in_progress(
-                        self.config.is_stripe_compat, retry_after
-                    )
+                    problem_details.in_progress(self.config.is_stripe_compat, retry_after)
                 ),
                 reject_reason="in_progress",
             )
@@ -295,10 +295,20 @@ class IdempotencyEngine:
             headers["idempotent-replayed"] = "true"
         else:
             headers["idempotency-replayed"] = "true"
+        body = stored.blob
+        if self.config.response_hook is not None:
+            try:
+                body, headers = self.config.response_hook(body, dict(headers), stored.marker)
+            except Exception:
+                # A hook must never break a replay: log and serve the response
+                # unmodified (still with the replayed marker header).
+                _logger.exception(
+                    "idemkit: response_hook raised; replaying the response unmodified."
+                )
         return NeutralResponse(
             status=stored.marker,
             headers=headers,
-            body=stored.blob,
+            body=body,
         )
 
 
@@ -307,9 +317,7 @@ def _problem_to_neutral(problem: tuple[int, dict[str, str], bytes]) -> NeutralRe
     return NeutralResponse(status=status, headers=headers, body=body)
 
 
-def _filter_headers(
-    headers: dict[str, str], config: IdempotencyConfig
-) -> dict[str, str]:
+def _filter_headers(headers: dict[str, str], config: IdempotencyConfig) -> dict[str, str]:
     """Apply header allow / deny lists per spec §4.10."""
     allow = config.effective_header_allow()
     deny = config.effective_header_deny()

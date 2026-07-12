@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from idemkit import ConsumerAction, IdempotentConsumer, InMemoryBackend
+from idemkit import ConsumerAction, IdempotentConsumer, InMemoryBackend, QueueConfig
 
 pytestmark = pytest.mark.e2e
 
@@ -46,8 +46,10 @@ def test_rabbitmq_redelivery_processed_once(rabbitmq_url):
     processed = {"n": 0}
     consumer = IdempotentConsumer(
         backend=InMemoryBackend(),
-        key=lambda m: m["message_id"],   # key on the id we set when publishing
-        visibility_timeout_seconds=30,
+        config=QueueConfig(
+            dedup_id=lambda m: m["message_id"],  # key on the id we set when publishing
+            visibility_timeout_seconds=30,
+        ),
     )
 
     @consumer.handle

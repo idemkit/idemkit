@@ -54,9 +54,7 @@ class BackendConformance:
                 # A vector that errors (not just asserts) is still a failure, not
                 # a crash of the whole run — record it and keep going.
                 report.results.append(
-                    VectorResult(
-                        vector_id, False, description, error=f"{type(e).__name__}: {e}"
-                    )
+                    VectorResult(vector_id, False, description, error=f"{type(e).__name__}: {e}")
                 )
         return report
 

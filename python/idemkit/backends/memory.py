@@ -52,9 +52,9 @@ class ManualClock:
 
         clock = ManualClock()
         backend = InMemoryBackend(clock=clock)
-        ...                       # claim + complete
-        clock.advance(86_401)     # past expires_after_seconds
-        ...                       # next claim now sees the record as expired
+        ...  # claim + complete
+        clock.advance(86_401)  # past expires_after_seconds
+        ...  # next claim now sees the record as expired
     """
 
     def __init__(self, start: float = 0.0) -> None:
@@ -91,7 +91,7 @@ class InMemoryBackend:
         """No-op: the in-memory backend holds no external resources. Provided so
         it is a drop-in for the Redis/Postgres backends in ``async with`` and
         ``aclose()`` teardown code."""
-        return None
+        return
 
     async def __aenter__(self) -> InMemoryBackend:
         return self
@@ -118,9 +118,7 @@ class InMemoryBackend:
                         "Increase max_size or switch to a distributed backend.",
                         self._max_size,
                     )
-                    raise MemoryBackendFull(
-                        f"InMemoryBackend at max_size={self._max_size}"
-                    )
+                    raise MemoryBackendFull(f"InMemoryBackend at max_size={self._max_size}")
                 return self._fresh_claim(
                     effective_key, fingerprint, fingerprint_version, lease_ttl_seconds, now
                 )

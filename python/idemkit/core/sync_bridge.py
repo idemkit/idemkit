@@ -29,9 +29,7 @@ class _BackgroundLoop:
 
     def __init__(self) -> None:
         self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(
-            target=self._run, name="idemkit-sync-loop", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="idemkit-sync-loop", daemon=True)
         self._thread.start()
 
     def _run(self) -> None:

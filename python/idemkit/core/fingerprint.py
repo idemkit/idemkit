@@ -83,9 +83,9 @@ def canonicalize_body(body: bytes, content_type: str | None) -> bytes:
             parsed = json.loads(body)
         except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
             return body
-        return json.dumps(
-            parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        ).encode("utf-8")
+        return json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
 
     if ct_main == "application/x-www-form-urlencoded":
         try:

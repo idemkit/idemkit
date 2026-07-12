@@ -34,12 +34,13 @@ Example (confluent-kafka)::
         max_poll_interval_seconds=300,
     )
 
+
     @consumer.handle
     def process(record) -> None:
-        charge_customer(record.value())      # runs once per topic:partition:offset
+        charge_customer(record.value())  # runs once per topic:partition:offset
 
-    kc = Consumer({"bootstrap.servers": "...", "group.id": "billing",
-                   "enable.auto.commit": False})
+
+    kc = Consumer({"bootstrap.servers": "...", "group.id": "billing", "enable.auto.commit": False})
     kc.subscribe(["charges"])
     while True:
         record = kc.poll(1.0)
@@ -47,17 +48,17 @@ Example (confluent-kafka)::
             continue
         result = consumer.dispatch_sync(record)
         if result.action.value == "ack":
-            kc.commit(record)                # advance the offset only when done
+            kc.commit(record)  # advance the offset only when done
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import dataclasses
 from typing import Any
 
-from idemkit.adapters.queue import AttemptStore, IdempotentConsumer
+from idemkit.adapters.queue import IdempotentConsumer
 from idemkit.backends.base import IdempotencyBackend
-from idemkit.core.codecs import ResultCodec
+from idemkit.core.policy import QueueConfig
 
 
 def _attr(message: Any, name: str) -> Any:
@@ -77,28 +78,19 @@ def kafka_consumer(
     backend: IdempotencyBackend,
     group_id: str,
     max_poll_interval_seconds: float = 300.0,
-    max_attempts: int = 5,
-    on_exhausted: Callable[[Any, BaseException | None], Awaitable[None] | None]
-    | None = None,
-    attempt_store: AttemptStore | None = None,
-    cache_result: bool = False,
-    result_codec: ResultCodec[Any, Any] | None = None,
-    **kwargs: Any,
+    config: QueueConfig | None = None,
 ) -> IdempotentConsumer:
     """Build an :class:`~idemkit.IdempotentConsumer` wired for Kafka records.
 
-    ``group_id`` is the scope (required). Any extra keyword goes straight to
-    :class:`~idemkit.IdempotentConsumer`.
+    Kafka presets the dedup id (``topic:partition:offset``) and the scope
+    (``group_id``). Pass a :class:`~idemkit.QueueConfig` for behaviour.
     """
-    return IdempotentConsumer(
-        backend=backend,
-        key=kafka_dedup_id,
-        scope=lambda _m: group_id,
-        visibility_timeout_seconds=max_poll_interval_seconds,
-        max_attempts=max_attempts,
-        on_exhausted=on_exhausted,
-        attempt_store=attempt_store,
-        cache_result=cache_result,
-        result_codec=result_codec,
-        **kwargs,
-    )
+    cfg = config or QueueConfig()
+    presets: dict[str, Any] = {
+        "dedup_id": kafka_dedup_id,
+        "visibility_timeout_seconds": max_poll_interval_seconds,
+    }
+    if cfg.scope is None:  # group_id is the scope unless the caller set one
+        presets["scope"] = lambda _m: group_id
+    cfg = dataclasses.replace(cfg, **presets)
+    return IdempotentConsumer(backend=backend, config=cfg)

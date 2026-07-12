@@ -31,6 +31,15 @@ class Decision(str, enum.Enum):
     LEASE_RECLAIMED = "lease_reclaimed"
     LEASE_RECLAIMED_LOSS = "lease_reclaimed_loss"
     STORAGE_ERROR = "storage_error"
+    #: fail_open only: storage was down, so this operation ran WITHOUT idempotency
+    #: protection. Alert on this rate to size the blast radius of a fail_open outage.
+    RAN_UNPROTECTED = "ran_unprotected"
+    #: The lease lapsed mid-run (renewal could not be confirmed) and the handler was
+    #: cancelled. A rising rate means handlers outlive their lease (partition hazard).
+    LEASE_LOST = "lease_lost"
+    #: The side effect ran but the backend failed to record the result, so it was not
+    #: cached. A later retry re-runs it (effectively-once degrades to at-least-once).
+    COMPLETE_FAILED = "complete_failed"
     CORRUPT_RECORD = "corrupt_record"
 
 

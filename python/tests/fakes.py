@@ -40,9 +40,7 @@ class FailingBackend:
     async def release(self, effective_key: str, claim_token: str) -> bool:
         raise StorageError("FailingBackend: simulated outage")
 
-    async def renew(
-        self, effective_key: str, claim_token: str, lease_ttl_seconds: float
-    ) -> bool:
+    async def renew(self, effective_key: str, claim_token: str, lease_ttl_seconds: float) -> bool:
         raise StorageError("FailingBackend: simulated outage")
 
     async def wait_for_completion(

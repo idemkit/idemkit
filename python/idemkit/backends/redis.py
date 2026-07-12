@@ -200,6 +200,7 @@ class RedisBackend:
         client: Any,
         *,
         lease_grace_seconds: float = 60.0,
+        namespace: str = "",
     ) -> None:
         """Construct with an existing async Redis client.
 
@@ -210,9 +211,16 @@ class RedisBackend:
         expired-lease records can be observably *reclaimed* (emitting
         ``lease_reclaimed`` rather than ``new``) rather than vanishing as
         native Redis expiry. After lease + grace, the key auto-deletes.
+
+        ``namespace`` prefixes every Redis key and the Pub/Sub channel (as
+        ``"{namespace}:{key}"``), so idemkit can share a Redis with other data
+        or run two isolated instances on one server. Default is empty (no
+        prefix).
         """
         self._client = client
         self._lease_grace_seconds = lease_grace_seconds
+        self._namespace = namespace
+        self._channel = f"{namespace}:{NOTIFY_CHANNEL}" if namespace else NOTIFY_CHANNEL
         self._sha_claim: str | None = None
         self._sha_complete: str | None = None
         self._sha_release: str | None = None
@@ -228,11 +236,20 @@ class RedisBackend:
         url: str,
         *,
         lease_grace_seconds: float = 60.0,
+        namespace: str = "",
         **kwargs: Any,
     ) -> RedisBackend:
         """Construct from a redis:// URL.
 
-        Lazy: the connection pool is opened on first call, not now.
+        Lazy: the connection pool is opened on first call, not now. Extra
+        keyword arguments are forwarded to the redis client (e.g. ``password``,
+        ``ssl_cert_reqs`` for a ``rediss://`` URL).
+
+        A default ``socket_connect_timeout`` is applied so an unreachable server
+        fails fast (fail-closed) instead of hanging a request; override it, or add
+        ``socket_timeout`` for a command-level cap. Note ``socket_timeout`` also
+        governs the Pub/Sub subscriber's idle reads, so pair it with
+        ``health_check_interval`` if you set it.
         """
         try:
             import redis.asyncio as aioredis
@@ -240,8 +257,9 @@ class RedisBackend:
             raise ImportError(
                 "idemkit: install the `redis` extra: pip install 'idemkit[redis]'"
             ) from e
+        kwargs.setdefault("socket_connect_timeout", 5.0)
         client = aioredis.from_url(url, decode_responses=False, **kwargs)
-        return cls(client, lease_grace_seconds=lease_grace_seconds)
+        return cls(client, lease_grace_seconds=lease_grace_seconds, namespace=namespace)
 
     async def aclose(self) -> None:
         """Tear down the subscriber and close the client."""
@@ -276,7 +294,7 @@ class RedisBackend:
             outcome_b, record_json_b = await self._eval(
                 _LUA_CLAIM,
                 "_sha_claim",
-                [effective_key],
+                [self._key(effective_key)],
                 [claim_token, fingerprint, fingerprint_version, lease_ms, grace_ms],
             )
         except Exception as e:
@@ -317,14 +335,14 @@ class RedisBackend:
             result = await self._eval(
                 _LUA_COMPLETE,
                 "_sha_complete",
-                [effective_key],
+                [self._key(effective_key)],
                 [
                     claim_token,
                     response_status,
                     json.dumps(response_headers),
                     body_b64,
                     int(expires_after_seconds * 1000),
-                    NOTIFY_CHANNEL,
+                    self._channel,
                 ],
             )
         except Exception as e:
@@ -336,8 +354,8 @@ class RedisBackend:
             result = await self._eval(
                 _LUA_RELEASE,
                 "_sha_release",
-                [effective_key],
-                [claim_token, NOTIFY_CHANNEL],
+                [self._key(effective_key)],
+                [claim_token, self._channel],
             )
         except Exception as e:
             raise StorageError(f"redis release failed: {e}") from e
@@ -355,7 +373,7 @@ class RedisBackend:
             result = await self._eval(
                 _LUA_RENEW,
                 "_sha_renew",
-                [effective_key],
+                [self._key(effective_key)],
                 [claim_token, lease_ms, grace_ms],
             )
         except Exception as e:
@@ -369,8 +387,11 @@ class RedisBackend:
     ) -> StoredRecord | None:
         await self._ensure_subscriber()
 
+        # Waiters are keyed by the STORAGE key (namespace-prefixed) so a Pub/Sub
+        # payload, which carries that same storage key, matches the right waiters.
+        storage_key = self._key(effective_key)
         event = asyncio.Event()
-        self._waiters.setdefault(effective_key, set()).add(event)
+        self._waiters.setdefault(storage_key, set()).add(event)
 
         # Subscribe-then-read (spec §4.3), then wait on a NOTIFICATION-OR-POLL
         # schedule (spec §5.5). Redis Pub/Sub is at-most-once — a notification
@@ -397,13 +418,17 @@ class RedisBackend:
                     pass
                 poll = min(poll * 2, _POLL_CAP_SECONDS)
         finally:
-            waiters = self._waiters.get(effective_key)
+            waiters = self._waiters.get(storage_key)
             if waiters is not None:
                 waiters.discard(event)
                 if not waiters:
-                    self._waiters.pop(effective_key, None)
+                    self._waiters.pop(storage_key, None)
 
     # ----- internals -----
+
+    def _key(self, effective_key: str) -> str:
+        """The Redis key for a logical effective_key (namespace-prefixed)."""
+        return f"{self._namespace}:{effective_key}" if self._namespace else effective_key
 
     async def _eval(
         self,
@@ -430,7 +455,7 @@ class RedisBackend:
 
     async def _get_record(self, effective_key: str) -> StoredRecord | None:
         try:
-            raw = await self._client.get(effective_key)
+            raw = await self._client.get(self._key(effective_key))
         except Exception as e:
             raise StorageError(f"redis get failed: {e}") from e
         if raw is None:
@@ -479,7 +504,7 @@ class RedisBackend:
     async def _subscribe_loop(self) -> None:
         try:
             pubsub = self._client.pubsub()
-            await pubsub.subscribe(NOTIFY_CHANNEL)
+            await pubsub.subscribe(self._channel)
             self._subscriber_ready.set()
             try:
                 async for message in pubsub.listen():
@@ -496,7 +521,7 @@ class RedisBackend:
                     self._signal(payload)
             finally:
                 try:
-                    await pubsub.unsubscribe(NOTIFY_CHANNEL)
+                    await pubsub.unsubscribe(self._channel)
                 except Exception:
                     pass
                 try:
@@ -508,8 +533,8 @@ class RedisBackend:
         except Exception:
             _logger.exception("idemkit: Redis subscriber loop crashed")
 
-    def _signal(self, effective_key: str) -> None:
-        waiters = self._waiters.get(effective_key)
+    def _signal(self, storage_key: str) -> None:
+        waiters = self._waiters.get(storage_key)
         if not waiters:
             return
         for event in list(waiters):

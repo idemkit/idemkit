@@ -21,8 +21,10 @@ def __getattr__(name: str):  # type: ignore[no-untyped-def]
     """Lazy imports — Redis/Postgres deps are optional."""
     if name == "RedisBackend":
         from idemkit.backends.redis import RedisBackend
+
         return RedisBackend
     if name == "PostgresBackend":
         from idemkit.backends.postgres import PostgresBackend
+
         return PostgresBackend
     raise AttributeError(f"module 'idemkit.backends' has no attribute {name!r}")

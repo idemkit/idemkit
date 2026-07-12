@@ -1,6 +1,6 @@
 """End-to-end: a whole HTTP endpoint stays idempotent on real Redis and Postgres.
 
-This is the double_charge example (examples/http/double_charge.py) wired to a real
+This is the getting_started example (examples/http/getting_started.py) wired to a real
 backend. It fires 8 concurrent identical requests and asserts the handler runs
 exactly once, the other 7 replay. If a change breaks the documented guarantee,
 this fails.
@@ -17,21 +17,22 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from idemkit import IdempotencyMiddleware, PostgresBackend, RedisBackend
+from idemkit import HttpConfig, IdempotencyMiddleware, PostgresBackend, RedisBackend
 from idemkit.backends.postgres import init_pg
 
 pytestmark = pytest.mark.e2e
 
 
 def _make_app(backend, counter) -> Starlette:
+
     async def charge(request):
         await request.body()
-        counter["n"] += 1  # the side effect: charge the card
+        counter["n"] += 1
         return JSONResponse({"charge": counter["n"]}, status_code=201)
 
     app = Starlette(routes=[Route("/charge", charge, methods=["POST"])])
     app.add_middleware(
-        IdempotencyMiddleware, backend=backend, scope=lambda req: "customer-1"
+        IdempotencyMiddleware, backend=backend, config=HttpConfig(scope=lambda req: "customer-1")
     )
     return app
 
@@ -41,18 +42,16 @@ async def _fire_duplicates(app, key, n):
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         return await asyncio.gather(
             *[
-                client.post(
-                    "/charge", json={"amount": 10}, headers={"Idempotency-Key": key}
-                )
+                client.post("/charge", json={"amount": 10}, headers={"Idempotency-Key": key})
                 for _ in range(n)
             ]
         )
 
 
 def _assert_once(counter, results):
-    assert counter["n"] == 1  # handler ran exactly once
+    assert counter["n"] == 1
     charges = {r.json()["charge"] for r in results}
-    assert charges == {1}  # everyone got the first result
+    assert charges == {1}
     replayed = sum(1 for r in results if r.headers.get("idempotency-replayed") == "true")
     assert replayed == len(results) - 1
 

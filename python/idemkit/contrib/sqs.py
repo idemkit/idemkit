@@ -27,25 +27,30 @@ Example::
     consumer = sqs_consumer(
         backend=RedisBackend.from_url("redis://localhost:6379"),
         visibility_timeout_seconds=30,
-        max_attempts=5,
-        on_exhausted=lambda msg, exc: sqs.send_message(QueueUrl=DLQ, MessageBody=msg["Body"]),
+        config=QueueConfig(
+            max_attempts=5,
+            on_exhausted=lambda msg, exc: sqs.send_message(QueueUrl=DLQ, MessageBody=msg["Body"]),
+        ),
     )
+
 
     @consumer.handle
     def process(msg) -> None:
-        charge_customer(msg["Body"])          # runs once per MessageId
+        charge_customer(msg["Body"])  # runs once per MessageId
+
 
     run_forever(consumer, sqs_client=sqs, queue_url=QUEUE_URL, visibility_timeout=30)
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import dataclasses
+from collections.abc import Callable
 from typing import Any
 
 from idemkit.adapters.queue import ConsumerAction, IdempotentConsumer
 from idemkit.backends.base import IdempotencyBackend
-from idemkit.core.codecs import ResultCodec
+from idemkit.core.policy import QueueConfig
 
 
 def sqs_receive_count(message: dict[str, Any]) -> int | None:
@@ -59,33 +64,23 @@ def sqs_consumer(
     *,
     backend: IdempotencyBackend,
     visibility_timeout_seconds: float,
-    queue_scope: str | None = None,
-    max_attempts: int = 5,
-    on_exhausted: Callable[[Any, BaseException | None], Awaitable[None] | None]
-    | None = None,
-    cache_result: bool = False,
-    result_codec: ResultCodec[Any, Any] | None = None,
-    **kwargs: Any,
+    config: QueueConfig | None = None,
 ) -> IdempotentConsumer:
     """Build an :class:`~idemkit.IdempotentConsumer` wired for boto3 SQS messages.
 
-    ``queue_scope`` isolates dedup records per queue (pass the queue name/URL when
-    several queues share one backend). Any extra keyword goes straight to
-    :class:`~idemkit.IdempotentConsumer` (e.g. ``expires_after_seconds``,
-    ``on_storage_error``, ``event_handlers``).
+    SQS presets the dedup id (``MessageId``) and the attempt count
+    (``ApproximateReceiveCount``). Pass a :class:`~idemkit.QueueConfig` for
+    behaviour (``max_attempts``, ``on_exhausted``, ``scope`` per queue, ...).
     """
-    return IdempotentConsumer(
-        backend=backend,
-        key=lambda m: m["MessageId"],
-        receive_count=sqs_receive_count,
-        scope=(lambda _m: queue_scope) if queue_scope is not None else (lambda _m: ()),
-        visibility_timeout_seconds=visibility_timeout_seconds,
-        max_attempts=max_attempts,
-        on_exhausted=on_exhausted,
-        cache_result=cache_result,
-        result_codec=result_codec,
-        **kwargs,
-    )
+    cfg = config or QueueConfig()
+    presets: dict[str, Any] = {
+        "dedup_id": lambda m: m["MessageId"],
+        "visibility_timeout_seconds": visibility_timeout_seconds,
+    }
+    if cfg.receive_count is None:
+        presets["receive_count"] = sqs_receive_count
+    cfg = dataclasses.replace(cfg, **presets)
+    return IdempotentConsumer(backend=backend, config=cfg)
 
 
 def run_forever(

@@ -28,15 +28,25 @@ def _make_parser() -> argparse.ArgumentParser:
 
     init_pg = sub.add_parser(
         "init-pg",
-        help="Create the idemkit_records table and indexes (idempotent).",
+        help="Create the records table and indexes (idempotent).",
     )
     init_pg.add_argument("database_url", help="postgres:// URL.")
+    init_pg.add_argument(
+        "--table",
+        default="idemkit_records",
+        help="Records table name (default: idemkit_records).",
+    )
 
     vacuum = sub.add_parser(
         "pg-vacuum",
-        help="Delete expired records from idemkit_records.",
+        help="Delete expired records from the table.",
     )
     vacuum.add_argument("database_url", help="postgres:// URL.")
+    vacuum.add_argument(
+        "--table",
+        default="idemkit_records",
+        help="Records table name (default: idemkit_records).",
+    )
     vacuum.add_argument(
         "--expires-after-seconds",
         type=float,
@@ -47,20 +57,15 @@ def _make_parser() -> argparse.ArgumentParser:
         "--lease-grace-seconds",
         type=float,
         default=60.0,
-        help="CLAIMED records with lease_until + grace < now are deleted "
-        "(default: 60s).",
+        help="CLAIMED records with lease_until + grace < now are deleted (default: 60s).",
     )
 
     conformance = sub.add_parser(
         "conformance",
         help="Run the shared-core conformance vectors against backends.",
     )
-    conformance.add_argument(
-        "--redis", help="redis:// URL to also run the vectors against."
-    )
-    conformance.add_argument(
-        "--postgres", help="postgres:// URL to also run the vectors against."
-    )
+    conformance.add_argument("--redis", help="redis:// URL to also run the vectors against.")
+    conformance.add_argument("--postgres", help="postgres:// URL to also run the vectors against.")
 
     return parser
 
@@ -72,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init-pg":
         from idemkit.backends.postgres import init_pg
 
-        asyncio.run(init_pg(args.database_url))
+        asyncio.run(init_pg(args.database_url, table=args.table))
         print("idemkit: PostgreSQL schema initialized")
         return 0
 
@@ -82,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(
             pg_vacuum(
                 args.database_url,
+                table=args.table,
                 expires_after_seconds=args.expires_after_seconds,
                 lease_grace_seconds=args.lease_grace_seconds,
             )
