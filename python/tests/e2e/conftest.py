@@ -1,9 +1,9 @@
 """Fixtures for the end-to-end suite.
 
 These tests run the documented example patterns against real services running in
-local Docker containers (Redis, PostgreSQL, localstack SQS, redpanda Kafka,
-RabbitMQ). The point is a regression guard: if a future change breaks what the
-examples promise, an e2e test fails.
+local Docker containers (Redis, PostgreSQL, MongoDB, DynamoDB Local, localstack SQS,
+redpanda Kafka, RabbitMQ). The point is a regression guard: if a future change breaks
+what the examples promise, an e2e test fails.
 
 Bring the services up, then run the suite:
 
@@ -26,6 +26,8 @@ REDIS_URL = os.environ.get("IDEMKIT_TEST_REDIS_URL", "redis://localhost:6379")
 PG_URL = os.environ.get(
     "IDEMKIT_TEST_PG_URL", "postgresql://postgres:test@localhost:55432/postgres"
 )
+MONGO_URL = os.environ.get("IDEMKIT_TEST_MONGO_URL", "mongodb://localhost:27017")
+DYNAMODB_ENDPOINT = os.environ.get("IDEMKIT_TEST_DYNAMODB_ENDPOINT", "http://localhost:8000")
 SQS_ENDPOINT = os.environ.get("IDEMKIT_TEST_SQS_ENDPOINT", "http://localhost:4566")
 KAFKA_BOOTSTRAP = os.environ.get("IDEMKIT_TEST_KAFKA_BOOTSTRAP", "localhost:9092")
 RABBITMQ_URL = os.environ.get("IDEMKIT_TEST_RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
@@ -51,6 +53,22 @@ def pg_url() -> str:
     if not _reachable("localhost", 55432):
         pytest.skip("Postgres not reachable on localhost:55432 (docker compose up postgres)")
     return PG_URL
+
+
+@pytest.fixture
+def mongo_url() -> str:
+    pytest.importorskip("pymongo")
+    if not _reachable("localhost", 27017):
+        pytest.skip("MongoDB not reachable on localhost:27017 (docker compose up mongo)")
+    return MONGO_URL
+
+
+@pytest.fixture
+def dynamodb_endpoint() -> str:
+    pytest.importorskip("aioboto3")
+    if not _reachable("localhost", 8000):
+        pytest.skip("DynamoDB Local not reachable on localhost:8000 (docker compose up dynamodb)")
+    return DYNAMODB_ENDPOINT
 
 
 @pytest.fixture

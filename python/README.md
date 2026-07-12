@@ -378,7 +378,7 @@ idemkit stores a **hash** of the idempotency key, never the raw key, and never l
 ```bash
 cd python/ && python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-make check                 # the gate CI runs: lint + typecheck + full suite
+make check                 # the gate CI runs: lint + typecheck + full suite (all 5 backends)
 ```
 
 Setup, the `Makefile` targets, running the e2e brokers, and the house rules are in [`CONTRIBUTING.md`](CONTRIBUTING.md).

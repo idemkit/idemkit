@@ -53,7 +53,7 @@ another worker, then try to complete with the stale token) and assert the stale 
 fenced. Runs on real Redis, Postgres, MongoDB, and DynamoDB, because a fake does not
 reproduce server-side atomicity. Code in `tests/backends/`; set the backend endpoints
 (`IDEMKIT_TEST_REDIS_URL`, `IDEMKIT_TEST_PG_URL`, `IDEMKIT_TEST_MONGO_URL`,
-`IDEMKIT_TEST_DYNAMODB_ENDPOINT`), then `pytest` (or `make test-backends`).
+`IDEMKIT_TEST_DYNAMODB_ENDPOINT`), then `pytest` (or `make test`).
 
 **3. Property-based model checking.** Hypothesis generates random sequences of claim,
 complete, release, renew, and advance-clock, and drives a real backend and a reference
@@ -84,8 +84,7 @@ need the storage-clock guarantee.
 
 ```bash
 docker compose -f tests/e2e/docker-compose.yml up -d   # Redis, Postgres, Mongo, DynamoDB
-make check            # lint, types, and the full suite on Redis + Postgres
-make test-backends    # the backend suite across all five backends (also Mongo + DynamoDB)
+make check            # lint, types, and the full suite across all five backends
 ```
 
 ## Not done yet
