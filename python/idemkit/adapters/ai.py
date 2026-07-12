@@ -48,6 +48,7 @@ import json
 import logging
 import re
 import typing
+import unicodedata
 import warnings
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
@@ -62,14 +63,20 @@ from idemkit.core.codecs import (
     ResultCodec,
 )
 from idemkit.core.events import EventEmitter, EventHandler
+from idemkit.core.exception_cache import (
+    encode_exception,
+    is_cached_exception,
+    rebuild_exception,
+)
 from idemkit.core.exceptions import (
     ConfigurationError,
     IdempotencyConflict,
+    IdempotencyKeyMissing,
     PayloadMismatch,
     StorageUnavailable,
 )
 from idemkit.core.fingerprint import compose_key
-from idemkit.core.policy import UNSET, IdempotencyPolicy, pick
+from idemkit.core.policy import MethodConfig
 from idemkit.core.runner import CoreOutcome, IdempotentCore
 from idemkit.core.sync_bridge import register_closable, run_sync
 
@@ -95,24 +102,35 @@ NormalizeArgs = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 ValidationFingerprint = Callable[[Mapping[str, Any]], bytes]
 
 
+def _resolve_method_options(config: MethodConfig | None) -> dict[str, Any]:
+    """Read every option from the ``MethodConfig`` (or its defaults)."""
+    c = config or MethodConfig()
+    return {
+        "version": c.version,
+        "scope": c.scope,
+        "key_fields": c.key_fields,
+        "validation_fingerprint": c.validation_fingerprint,
+        "normalize_args": c.normalize_args,
+        "result_codec": c.result_codec,
+        "strict_keys": c.strict_keys,
+        "require_key": c.require_key,
+        "cache_exceptions": c.cache_exceptions,
+        "lease_ttl_seconds": c.lease_ttl_seconds if c.lease_ttl_seconds is not None else 60.0,
+        "wait_timeout_seconds": (
+            c.wait_timeout_seconds if c.wait_timeout_seconds is not None else 10.0
+        ),
+        "on_storage_error": c.on_storage_error,
+        "expires_after_seconds": c.expires_after_seconds,
+        "use_local_cache": c.use_local_cache,
+        "local_cache_max_items": c.local_cache_max_items,
+        "event_handlers": list(c.event_handlers),
+    }
+
+
 def idempotent(
     *,
     backend: IdempotencyBackend,
-    version: str = "1",
-    scope: CallerIdentity | None = None,
-    key_fields: list[str] | None = None,
-    validation_fingerprint: ValidationFingerprint | None = None,
-    normalize_args: NormalizeArgs | None = None,
-    result_codec: Any = "json",
-    strict_keys: bool = True,
-    lease_ttl_seconds: float = UNSET,
-    wait_timeout_seconds: float = UNSET,
-    on_storage_error: Literal["fail_closed", "fail_open"] = UNSET,
-    expires_after_seconds: float = UNSET,
-    use_local_cache: bool = UNSET,
-    local_cache_max_items: int = UNSET,
-    event_handlers: list[EventHandler] | None = UNSET,
-    config: IdempotencyPolicy | None = None,
+    config: MethodConfig | None = None,
 ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
     """Decorate a side-effectful async function so identical calls dedupe (§8.3).
 
@@ -122,31 +140,12 @@ def idempotent(
     ``ResultCodec``. ``lease_ttl_seconds`` is renewed while the function runs (§5.3.1).
     """
 
+    opts = _resolve_method_options(config)
+
     def decorator(
         fn: Callable[..., Awaitable[Any]],
     ) -> Callable[..., Awaitable[Any]]:
-        engine = _ToolEngine(
-            fn,
-            backend=backend,
-            version=version,
-            scope=scope,
-            key_fields=key_fields,
-            validation_fingerprint=validation_fingerprint,
-            normalize_args=normalize_args,
-            result_codec=result_codec,
-            strict_keys=strict_keys,
-            lease_ttl_seconds=pick(lease_ttl_seconds, config, "lease_ttl_seconds", 60.0),
-            wait_timeout_seconds=pick(wait_timeout_seconds, config, "wait_timeout_seconds", 10.0),
-            on_storage_error=pick(on_storage_error, config, "on_storage_error", "fail_closed"),
-            expires_after_seconds=pick(
-                expires_after_seconds, config, "expires_after_seconds", 86_400.0
-            ),
-            use_local_cache=pick(use_local_cache, config, "use_local_cache", False),
-            local_cache_max_items=pick(
-                local_cache_max_items, config, "local_cache_max_items", 1024
-            ),
-            event_handlers=list(pick(event_handlers, config, "event_handlers", None) or []),
-        )
+        engine = _ToolEngine(fn, backend=backend, **opts)
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -162,21 +161,7 @@ def idempotent(
 def idempotent_sync(
     *,
     backend: IdempotencyBackend,
-    version: str = "1",
-    scope: CallerIdentity | None = None,
-    key_fields: list[str] | None = None,
-    validation_fingerprint: ValidationFingerprint | None = None,
-    normalize_args: NormalizeArgs | None = None,
-    result_codec: Any = "json",
-    strict_keys: bool = True,
-    lease_ttl_seconds: float = UNSET,
-    wait_timeout_seconds: float = UNSET,
-    on_storage_error: Literal["fail_closed", "fail_open"] = UNSET,
-    expires_after_seconds: float = UNSET,
-    use_local_cache: bool = UNSET,
-    local_cache_max_items: int = UNSET,
-    event_handlers: list[EventHandler] | None = UNSET,
-    config: IdempotencyPolicy | None = None,
+    config: MethodConfig | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Synchronous variant of :func:`idempotent` for non-async codebases.
 
@@ -189,30 +174,10 @@ def idempotent_sync(
     async :func:`idempotent` there instead.
     """
 
+    opts = _resolve_method_options(config)
+
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-        engine = _ToolEngine(
-            fn,
-            backend=backend,
-            version=version,
-            scope=scope,
-            key_fields=key_fields,
-            validation_fingerprint=validation_fingerprint,
-            normalize_args=normalize_args,
-            result_codec=result_codec,
-            strict_keys=strict_keys,
-            runs_blocking=True,
-            lease_ttl_seconds=pick(lease_ttl_seconds, config, "lease_ttl_seconds", 60.0),
-            wait_timeout_seconds=pick(wait_timeout_seconds, config, "wait_timeout_seconds", 10.0),
-            on_storage_error=pick(on_storage_error, config, "on_storage_error", "fail_closed"),
-            expires_after_seconds=pick(
-                expires_after_seconds, config, "expires_after_seconds", 86_400.0
-            ),
-            use_local_cache=pick(use_local_cache, config, "use_local_cache", False),
-            local_cache_max_items=pick(
-                local_cache_max_items, config, "local_cache_max_items", 1024
-            ),
-            event_handlers=list(pick(event_handlers, config, "event_handlers", None) or []),
-        )
+        engine = _ToolEngine(fn, backend=backend, runs_blocking=True, **opts)
         register_closable(backend)
 
         @functools.wraps(fn)
@@ -243,6 +208,8 @@ class _ToolEngine:
         wait_timeout_seconds: float,
         on_storage_error: Literal["fail_closed", "fail_open"],
         strict_keys: bool,
+        require_key: bool,
+        cache_exceptions: tuple[type[BaseException], ...],
         expires_after_seconds: float,
         use_local_cache: bool,
         local_cache_max_items: int,
@@ -291,9 +258,7 @@ class _ToolEngine:
             # other's result. Catch it at decoration unless the tool takes
             # **kwargs (where we genuinely can't know the field set).
             params = self.signature.parameters
-            takes_var_kw = any(
-                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-            )
+            takes_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
             unknown = [f for f in key_fields if f.split(".", 1)[0] not in params]
             if unknown and not takes_var_kw:
                 raise ConfigurationError(
@@ -311,9 +276,7 @@ class _ToolEngine:
                 # (the value-based check still runs per call on the no-selector
                 # path). Listing it deliberately is legitimate, hence a warning,
                 # not an error.
-                volatile = [
-                    f for f in key_fields if _name_looks_volatile(f.rsplit(".", 1)[-1])
-                ]
+                volatile = [f for f in key_fields if _name_looks_volatile(f.rsplit(".", 1)[-1])]
                 if volatile:
                     warnings.warn(
                         f"idemkit: tool {self.tool_name!r} lists volatile-looking "
@@ -334,6 +297,8 @@ class _ToolEngine:
         self.validation_fingerprint = validation_fingerprint
         self.normalize_args = normalize_args
         self.strict_keys = strict_keys
+        self.require_key = require_key
+        self.cache_exceptions = cache_exceptions
         self._warned_volatile: set[str] = set()
         self._warned_volatile_explicit = False
         self.codec: ResultCodec[Any, Any] = _resolve_codec(
@@ -378,6 +343,10 @@ class _ToolEngine:
 
         if outcome is CoreOutcome.REPLAY:
             assert decision.stored is not None
+            if is_cached_exception(decision.stored):
+                # A prior run failed with a declared-deterministic exception; the
+                # duplicate re-raises it instead of re-running the side effect.
+                raise rebuild_exception(decision.stored)
             return self.codec.decode(decision.stored)
         if outcome is CoreOutcome.MISMATCH:
             # Only reachable if the same key was stored under a different
@@ -415,10 +384,18 @@ class _ToolEngine:
             return await raw()
 
         try:
-            value, lease_lost = await self.core.execute_with_heartbeat(
-                effective_key, token, raw
-            )
-        except BaseException:
+            value, lease_lost = await self.core.execute_with_heartbeat(effective_key, token, raw)
+        except BaseException as exc:
+            if self.cache_exceptions and isinstance(exc, self.cache_exceptions):
+                # A declared-deterministic failure: cache it and replay it on a
+                # duplicate, instead of releasing (which would re-run the tool).
+                try:
+                    await self.core.complete(effective_key, token, encode_exception(exc))
+                except Exception:
+                    # Couldn't record it — fall back to release so a retry re-runs
+                    # rather than wedging the key (the lease is the safety net).
+                    await self.core.release(effective_key, token)
+                raise
             # The tool itself raised (or was cancelled). Release the claim so a
             # retry re-runs it once (spec §8.4 tool-crash-recovery). This is the
             # crash path, distinct from the unserializable-result path below
@@ -465,11 +442,7 @@ class _ToolEngine:
         try:
             # Ambient identity (zero-arg, e.g. reads a contextvar) is called with
             # no arguments; the arg-derived form receives the bound arguments.
-            value = (
-                self.scope(arguments)
-                if self._identity_wants_args
-                else self.scope()
-            )
+            value = self.scope(arguments) if self._identity_wants_args else self.scope()
         except Exception as e:
             # The extractor receives the bound arguments as a dict; the most
             # common failure is indexing a key that isn't a parameter (a typo).
@@ -511,9 +484,7 @@ class _ToolEngine:
             self._warn_on_volatile_explicit(key_component)
         else:
             key_component = self._derive_args_hash(arguments)
-        return compose_key(
-            [self.tool_name, self.version, key_component, caller_id]
-        )
+        return compose_key([self.tool_name, self.version, key_component, caller_id])
 
     def _warn_on_volatile_explicit(self, key_value: str) -> None:
         # The single sharpest AI-surface footgun (review C-1): a provider's
@@ -547,6 +518,15 @@ class _ToolEngine:
         elif self.normalize_args is not None:
             selected = self.normalize_args(arguments)
         else:
+            if self.require_key:
+                # The caller opted into strict enforcement: refuse the
+                # derive-from-all-arguments fallback instead of warning.
+                raise IdempotencyKeyMissing(
+                    f"idemkit: tool {self.tool_name!r} has require_key=True but no key "
+                    "strategy for this call. Set key_fields=[...] (or normalize_args), "
+                    "or pass an explicit idempotency_key. idemkit refuses to derive the "
+                    "key from all arguments when require_key is on."
+                )
             selected = dict(arguments)
             self._warn_on_volatile(selected)
         return _canonical_hash(selected)
@@ -589,14 +569,10 @@ def _resolve_codec(spec: Any, return_annotation: Any) -> ResultCodec[Any, Any]:
     # Assume a ResultCodec instance (duck-typed: has encode/decode).
     if hasattr(spec, "encode") and hasattr(spec, "decode"):
         return spec  # type: ignore[no-any-return]
-    raise ConfigurationError(
-        f"idemkit: result_codec {spec!r} is not a recognized codec spec."
-    )
+    raise ConfigurationError(f"idemkit: result_codec {spec!r} is not a recognized codec spec.")
 
 
-def _resolve_return_type(
-    fn: Callable[..., Awaitable[Any]], signature: inspect.Signature
-) -> Any:
+def _resolve_return_type(fn: Callable[..., Awaitable[Any]], signature: inspect.Signature) -> Any:
     """The decorated function's resolved return type, for the dataclass/pydantic codecs.
 
     With ``from __future__ import annotations`` (PEP 563) every annotation is a
@@ -652,16 +628,29 @@ def _resolve_path(arguments: Mapping[str, Any], path: str) -> Any:
     return value
 
 
+def _nfc(value: Any) -> Any:
+    """Recursively NFC-normalize strings so canonically-equal text hashes equal
+    (``"café"`` typed as NFC vs NFD must dedupe). Non-strings pass through."""
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value)
+    if isinstance(value, Mapping):
+        return {k: _nfc(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_nfc(v) for v in value]
+    return value
+
+
 def _canonical_hash(selected: Mapping[str, Any]) -> str:
     """SHA-256 of the canonical JSON of the selected key fields (§8.2).
 
-    Inherits JSON sorted-keys canonicalization's documented limits (numeric
-    1 vs 1.0, Unicode NFC). A value that isn't JSON-serializable fails loudly
-    rather than producing an unstable repr-based key.
+    Strings are NFC-normalized so canonically-equal text hashes equal. Numbers keep
+    JSON's own repr, so an int and an equal float (``1`` vs ``1.0``) are DIFFERENT
+    keys: keep key-field types stable across retries. A value that isn't
+    JSON-serializable fails loudly rather than producing an unstable repr-based key.
     """
     try:
         canonical = json.dumps(
-            selected, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            _nfc(selected), sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
     except (TypeError, ValueError) as e:
         raise ConfigurationError(
@@ -731,6 +720,4 @@ def _name_looks_volatile(name: str) -> bool:
 def _looks_volatile(name: str, value: Any) -> bool:
     if _name_looks_volatile(name):
         return True
-    if isinstance(value, str) and (_UUID_RE.match(value) or _ISO8601_RE.match(value)):
-        return True
-    return False
+    return isinstance(value, str) and bool(_UUID_RE.match(value) or _ISO8601_RE.match(value))

@@ -15,7 +15,7 @@ from idemkit import problem_details
 from idemkit.backends.base import IdempotencyBackend
 from idemkit.core.config import IdempotencyConfig, resolve_http_config
 from idemkit.core.engine import IdempotencyEngine, NeutralRequest, NeutralResponse
-from idemkit.core.policy import IdempotencyPolicy
+from idemkit.core.policy import HttpConfig
 
 _logger = logging.getLogger(__name__)
 
@@ -50,21 +50,18 @@ class IdempotencyMiddleware:
 
     Usage::
 
-        from idemkit import IdempotencyMiddleware, IdempotencyConfig, InMemoryBackend
+        from idemkit import IdempotencyMiddleware, HttpConfig, InMemoryBackend
 
         app.add_middleware(
             IdempotencyMiddleware,
             backend=InMemoryBackend(),
-            config=IdempotencyConfig(scope=lambda req: req.state.user.id),
+            config=HttpConfig(scope=lambda req: req.state.user.id),
         )
 
-    Or with kwargs (config built implicitly)::
-
-        app.add_middleware(
-            IdempotencyMiddleware,
-            backend=InMemoryBackend(),
-            scope=lambda req: req.state.user.id,
-        )
+    On the ASGI ``lifespan`` shutdown the middleware closes the backend it was
+    given (pool + background listener), so the one-line install does not leak.
+    Pass ``manage_backend=False`` if you share the backend elsewhere and close it
+    yourself.
     """
 
     def __init__(
@@ -72,19 +69,34 @@ class IdempotencyMiddleware:
         app: ASGIApp,
         *,
         backend: IdempotencyBackend,
-        config: IdempotencyConfig | IdempotencyPolicy | None = None,
-        **config_kwargs: Any,
+        config: HttpConfig | IdempotencyConfig | None = None,
+        manage_backend: bool = True,
     ) -> None:
-        config = resolve_http_config(config, config_kwargs)
+        config = resolve_http_config(config)
         self.app = app
         self.config = config
+        self._backend = backend
+        self._manage_backend = manage_backend
         self.engine = IdempotencyEngine(backend=backend, config=config)
         if type(backend).__name__ == "InMemoryBackend":
             _warn_inmemory_backend()
 
-    async def __call__(
-        self, scope: ASGIScope, receive: ASGIReceive, send: ASGISend
-    ) -> None:
+    async def __call__(self, scope: ASGIScope, receive: ASGIReceive, send: ASGISend) -> None:
+        if scope.get("type") == "lifespan" and self._manage_backend:
+            # Run the app's own lifespan, then close the backend on shutdown so the
+            # pool + subscriber task don't leak. aclose is optional on the backend
+            # Protocol, so call it only if present (custom backends may omit it).
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                aclose = getattr(self._backend, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await aclose()
+                    except Exception:
+                        _logger.exception("idemkit: error closing backend on shutdown")
+            return
+
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -224,9 +236,7 @@ class IdempotencyMiddleware:
             return
 
         captured = capturer.to_neutral()
-        await self.engine.on_complete(
-            outcome.effective_key, outcome.claim_token, captured
-        )
+        await self.engine.on_complete(outcome.effective_key, outcome.claim_token, captured)
 
     # ----- extraction hooks -----
 
@@ -388,12 +398,9 @@ def _build_chained_receive(
     return receive
 
 
-async def _send_neutral_response(
-    send: ASGISend, response: NeutralResponse
-) -> None:
+async def _send_neutral_response(send: ASGISend, response: NeutralResponse) -> None:
     headers_list = [
-        (name.encode("latin1"), value.encode("latin1"))
-        for name, value in response.headers.items()
+        (name.encode("latin1"), value.encode("latin1")) for name, value in response.headers.items()
     ]
     await send(
         {
@@ -464,9 +471,7 @@ class _ResponseCapturer:
         message = self._start_message
         if bypass_reason is not None:
             headers = list(message.get("headers", []))
-            headers.append(
-                (b"idempotency-replay-unavailable", bypass_reason.encode("latin1"))
-            )
+            headers.append((b"idempotency-replay-unavailable", bypass_reason.encode("latin1")))
             message = {**message, "headers": headers}
         self._start_sent = True
         await self._send(message)

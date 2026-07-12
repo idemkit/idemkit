@@ -29,10 +29,11 @@ Example — a FastMCP tool that really is safe to call twice::
     mcp = FastMCP("payments")
     backend = RedisBackend.from_url("redis://localhost:6379")
 
+
     @mcp.tool()
-    @mcp_idempotent(backend=backend, key_fields=["order_id", "amount"])
+    @mcp_idempotent(backend=backend, config=MethodConfig(key_fields=["order_id", "amount"]))
     async def refund(order_id: str, amount: int) -> dict:
-        return await payments.refund(order_id, amount)   # charged once per (order_id, amount)
+        return await payments.refund(order_id, amount)  # charged once per (order_id, amount)
 
 The agent re-emitting ``refund("A123", 50)`` on a re-plan replays the first
 result instead of issuing a second refund.
@@ -44,8 +45,9 @@ import inspect
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from idemkit.adapters.ai import CallerIdentity, idempotent, idempotent_sync
+from idemkit.adapters.ai import idempotent, idempotent_sync
 from idemkit.backends.base import IdempotencyBackend
+from idemkit.core.policy import MethodConfig
 
 HINT_KEY = "idempotentHint"
 
@@ -53,32 +55,22 @@ HINT_KEY = "idempotentHint"
 def mcp_idempotent(
     *,
     backend: IdempotencyBackend,
-    key_fields: list[str] | None = None,
-    scope: CallerIdentity | None = None,
-    version: str = "1",
-    **kwargs: Any,
+    config: MethodConfig | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Enforce idempotency on an MCP tool and mark it as idempotent.
 
     Works on ``async def`` and plain ``def`` tools alike (it picks the matching
-    idemkit decorator). Dedups on ``key_fields`` — the argument fields that define
-    "the same call"; volatile per-turn ids (``tool_call_id``) are never listed, so
-    a retry with a fresh id still dedupes. Extra keywords pass through to
-    :func:`idemkit.idempotent` (``result_codec``, ``lease_ttl_seconds``, ...).
+    idemkit decorator). Dedup on ``config.key_fields`` — the argument fields that
+    define "the same call"; volatile per-turn ids (``tool_call_id``) are never
+    listed, so a retry with a fresh id still dedupes.
 
-    The returned function carries ``idempotent_hint = True`` so a server can
-    surface ``idempotentHint`` in the tool's advertised annotations.
+    The returned function carries ``idempotent_hint = True`` so a server can surface
+    ``idempotentHint`` in the tool's advertised annotations.
     """
 
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
         deco = idempotent if inspect.iscoroutinefunction(fn) else idempotent_sync
-        wrapped: Any = deco(
-            backend=backend,
-            key_fields=key_fields,
-            scope=scope,
-            version=version,
-            **kwargs,
-        )(fn)
+        wrapped: Any = deco(backend=backend, config=config)(fn)
         wrapped.idempotent_hint = True
         return cast("Callable[..., Any]", wrapped)
 
@@ -107,10 +99,7 @@ def wrap_if_idempotent(
     *,
     annotations: Any,
     backend: IdempotencyBackend,
-    key_fields: list[str] | None = None,
-    scope: CallerIdentity | None = None,
-    version: str = "1",
-    **kwargs: Any,
+    config: MethodConfig | None = None,
 ) -> Callable[..., Any]:
     """Enforce dedup on ``fn`` only if its MCP ``annotations`` declare the hint.
 
@@ -121,10 +110,4 @@ def wrap_if_idempotent(
     """
     if not read_idempotent_hint(annotations):
         return fn
-    return mcp_idempotent(
-        backend=backend,
-        key_fields=key_fields,
-        scope=scope,
-        version=version,
-        **kwargs,
-    )(fn)
+    return mcp_idempotent(backend=backend, config=config)(fn)

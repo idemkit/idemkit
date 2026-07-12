@@ -18,6 +18,10 @@ _logger = logging.getLogger(__name__)
 CallerIdentityExtractor = Callable[[Any], str]
 KeyExtractor = Callable[[Any], "str | None"]
 ResponseRedactor = Callable[[bytes, dict[str, str], int], "tuple[bytes, dict[str, str]]"]
+# (replay body, replay headers, status) -> the (body, headers) to send to the
+# DUPLICATE. Runs ONLY when replaying a stored response, so you can add a header,
+# tweak Cache-Control, and so on. Never runs on the first (live) request.
+ResponseHook = Callable[[bytes, dict[str, str], int], "tuple[bytes, dict[str, str]]"]
 # (raw request body, content-type) -> the bytes to fingerprint. Lets you select
 # which body fields matter (drop volatile timestamps/nonces). Returns the
 # canonical bytes idemkit hashes; return b"" to ignore the body entirely (§4.5).
@@ -131,6 +135,10 @@ class IdempotencyConfig:
     # PII redaction (§4.14)
     response_redactor: ResponseRedactor | None = None
 
+    # Replay response hook: modify the response served to a DUPLICATE (runs only
+    # on replay, never on the first request).
+    response_hook: ResponseHook | None = None
+
     # Header allow/deny lists (§4.10) — None falls back to module defaults
     header_allow: set[str] | None = None
     header_deny: set[str] | None = None
@@ -141,8 +149,7 @@ class IdempotencyConfig:
 
         if self.compat_mode not in ("default", "stripe"):
             raise ConfigurationError(
-                f"idemkit: compat_mode must be 'default' or 'stripe', "
-                f"got {self.compat_mode!r}."
+                f"idemkit: compat_mode must be 'default' or 'stripe', got {self.compat_mode!r}."
             )
 
         if self.scope_mode not in ("warn", "single_tenant", "strict"):
@@ -194,40 +201,55 @@ class IdempotencyConfig:
         return DEFAULT_HEADER_DENY
 
 
-def resolve_http_config(config: Any, config_kwargs: dict[str, Any]) -> IdempotencyConfig:
-    """Build the HTTP config from an ``IdempotencyConfig``, a reusable
-    ``IdempotencyPolicy`` (widened with the HTTP defaults, so one policy really
-    does work on all three surfaces), or plain keyword options.
+def resolve_http_config(config: Any) -> IdempotencyConfig:
+    """Build the HTTP config from an ``HttpConfig`` (flat, widened with the HTTP
+    defaults) or the internal ``IdempotencyConfig``.
     """
-    from idemkit.core.policy import IdempotencyPolicy
+    from idemkit.core.policy import HttpConfig
 
-    if isinstance(config, IdempotencyPolicy):
-        # A policy leaves lease/wait as None ("use the surface default"), so fill
-        # in the HTTP defaults here; HTTP-specific options ride in config_kwargs.
-        return IdempotencyConfig(
-            lease_ttl_seconds=(
+    if config is None:
+        return IdempotencyConfig()
+
+    if isinstance(config, HttpConfig):
+        # A flat HttpConfig. lease/wait default to None ("use the HTTP default");
+        # other None fields fall back to the IdempotencyConfig defaults (not passed).
+        data: dict[str, Any] = {
+            "lease_ttl_seconds": (
                 config.lease_ttl_seconds if config.lease_ttl_seconds is not None else 30.0
             ),
-            wait_timeout_seconds=(
+            "wait_timeout_seconds": (
                 config.wait_timeout_seconds if config.wait_timeout_seconds is not None else 10.0
             ),
-            expires_after_seconds=config.expires_after_seconds,
-            on_storage_error=config.on_storage_error,
-            use_local_cache=config.use_local_cache,
-            local_cache_max_items=config.local_cache_max_items,
-            event_handlers=list(config.event_handlers),
-            **config_kwargs,
-        )
-    if config is None:
-        return IdempotencyConfig(**config_kwargs)
-    if config_kwargs:
-        raise TypeError(
-            "idemkit: pass either config= or keyword options, not both. "
-            f"Stray keywords: {list(config_kwargs)}"
-        )
+            "expires_after_seconds": config.expires_after_seconds,
+            "on_storage_error": config.on_storage_error,
+            "use_local_cache": config.use_local_cache,
+            "local_cache_max_items": config.local_cache_max_items,
+            "event_handlers": list(config.event_handlers),
+            "scope": config.scope,
+            "scope_mode": config.scope_mode,
+            "key": config.key,
+            "require_key_for_mutations": config.require_key_for_mutations,
+            "body_fingerprint": config.body_fingerprint,
+            "response_redactor": config.response_redactor,
+            "response_hook": config.response_hook,
+            "compat_mode": config.compat_mode,
+        }
+        for f in (
+            "applicable_methods",
+            "header_allow",
+            "header_deny",
+            "cacheable_status",
+            "max_body_bytes",
+            "max_request_body_bytes",
+        ):
+            v = getattr(config, f)
+            if v is not None:
+                data[f] = v
+        return IdempotencyConfig(**data)
+
     if not isinstance(config, IdempotencyConfig):
         raise TypeError(
-            "idemkit: config= must be an IdempotencyConfig or IdempotencyPolicy, "
+            "idemkit: config= must be an HttpConfig or IdempotencyConfig, "
             f"got {type(config).__name__}."
         )
     return config

@@ -141,9 +141,7 @@ class IdempotentCore:
         # effective_key -> (fingerprint, stored_result, expires_at_monotonic).
         # Only COMPLETED results land here (spec §5.9): never an in-progress
         # claim, whose state is volatile and owned elsewhere.
-        self._local_cache: OrderedDict[str, tuple[str, StoredResult, float]] = (
-            OrderedDict()
-        )
+        self._local_cache: OrderedDict[str, tuple[str, StoredResult, float]] = OrderedDict()
 
     # ----- decision phase -----
 
@@ -187,11 +185,7 @@ class IdempotentCore:
             return self._on_storage_failure(effective_key, started)
 
         if claim.result == ClaimResultType.NEW_CLAIMED:
-            decision = (
-                Decision.CORRUPT_RECORD
-                if claim.recovered_from_corrupt
-                else Decision.NEW
-            )
+            decision = Decision.CORRUPT_RECORD if claim.recovered_from_corrupt else Decision.NEW
             self._emit(decision, effective_key, started)
             return CoreDecision(CoreOutcome.PROCEED, claim_token=claim.our_claim_token)
 
@@ -225,17 +219,14 @@ class IdempotentCore:
             )
         except Exception:
             _logger.exception(
-                "idemkit: backend wait_for_completion failed; applying "
-                "on_storage_error=%s",
+                "idemkit: backend wait_for_completion failed; applying on_storage_error=%s",
                 self.on_storage_error,
             )
             return self._on_storage_failure(effective_key, started)
         wait_duration = time.monotonic() - wait_started
 
         if record is not None:
-            self._emit(
-                Decision.REPLAYED, effective_key, started, wait_duration=wait_duration
-            )
+            self._emit(Decision.REPLAYED, effective_key, started, wait_duration=wait_duration)
             stored = _stored_from_record(record)
             self._local_put(effective_key, fingerprint, stored)
             return CoreDecision(
@@ -245,12 +236,8 @@ class IdempotentCore:
             )
 
         # Timed out, or the in-flight claim was released without completing.
-        self._emit(
-            Decision.CONFLICT, effective_key, started, wait_duration=wait_duration
-        )
-        return CoreDecision(
-            CoreOutcome.CONFLICT, wait_duration_seconds=wait_duration
-        )
+        self._emit(Decision.CONFLICT, effective_key, started, wait_duration=wait_duration)
+        return CoreDecision(CoreOutcome.CONFLICT, wait_duration_seconds=wait_duration)
 
     # ----- completion phase -----
 
@@ -297,6 +284,9 @@ class IdempotentCore:
                 "Holding the claim so the lease (not an immediate retry) governs "
                 "re-execution."
             )
+            # Emit a distinct event: the side effect ran but its result is not
+            # replayable, so a later retry re-runs it (at-least-once degradation).
+            self._emit_simple(Decision.COMPLETE_FAILED, effective_key)
             return
 
         if not ok:
@@ -359,9 +349,7 @@ class IdempotentCore:
         if decision.outcome is CoreOutcome.CONFLICT:
             return RunOnceResult(RunStatus.CONFLICT, None)
         if decision.outcome is CoreOutcome.STORAGE_REFUSE:
-            raise StorageError(
-                "idemkit: storage unavailable and on_storage_error=fail_closed"
-            )
+            raise StorageError("idemkit: storage unavailable and on_storage_error=fail_closed")
 
         # PROCEED (claim held) or STORAGE_PASS (run unprotected, this once).
         unprotected = decision.outcome is CoreOutcome.STORAGE_PASS
@@ -383,9 +371,7 @@ class IdempotentCore:
                 # executor may already own the key. Do not complete (we'd be
                 # fenced anyway) and do not release (it isn't ours to release).
                 return RunOnceResult(RunStatus.LEASE_LOST, None)
-            return await self._finalize(
-                effective_key, token, value, encode, is_cacheable
-            )
+            return await self._finalize(effective_key, token, value, encode, is_cacheable)
 
         try:
             value = await handler()
@@ -455,12 +441,8 @@ class IdempotentCore:
         own claim/complete flow but still want lease renewal. ``run_once`` uses
         the same machinery internally.
         """
-        interval = interval_seconds or _default_heartbeat_interval(
-            self.lease_ttl_seconds
-        )
-        return await self._run_under_heartbeat(
-            effective_key, claim_token, handler, interval
-        )
+        interval = interval_seconds or _default_heartbeat_interval(self.lease_ttl_seconds)
+        return await self._run_under_heartbeat(effective_key, claim_token, handler, interval)
 
     async def _run_under_heartbeat(
         self,
@@ -505,6 +487,9 @@ class IdempotentCore:
                     ok = False
                 if not ok:
                     lease_lost = True
+                    # Emit so a rising lease-lost rate (handlers outliving their
+                    # lease) is alertable, not just a warning in the logs.
+                    self._emit_simple(Decision.LEASE_LOST, effective_key)
                     handler_task.cancel()
                     return
 
@@ -526,9 +511,14 @@ class IdempotentCore:
     # ----- internals -----
 
     def _on_storage_failure(self, effective_key: str, started: float) -> CoreDecision:
-        self._emit(Decision.STORAGE_ERROR, effective_key, started)
         if self.on_storage_error == "fail_closed":
+            # Refused: the request was rejected, no side effect ran.
+            self._emit(Decision.STORAGE_ERROR, effective_key, started)
             return CoreDecision(CoreOutcome.STORAGE_REFUSE)
+        # fail_open: this request is about to run WITHOUT idempotency protection.
+        # Emit a distinct decision so an operator can measure the unprotected-run
+        # count (the blast radius of the outage), separate from plain storage errors.
+        self._emit(Decision.RAN_UNPROTECTED, effective_key, started)
         return CoreDecision(CoreOutcome.STORAGE_PASS)
 
     def _replay(self, stored: StoredResult) -> StoredResult:
@@ -537,9 +527,7 @@ class IdempotentCore:
             return stored
         return self.response_hook(stored)
 
-    def _local_get(
-        self, effective_key: str, fingerprint: str
-    ) -> StoredResult | None:
+    def _local_get(self, effective_key: str, fingerprint: str) -> StoredResult | None:
         entry = self._local_cache.get(effective_key)
         if entry is None:
             return None
@@ -554,9 +542,7 @@ class IdempotentCore:
         self._local_cache.move_to_end(effective_key)  # LRU bump
         return stored
 
-    def _local_put(
-        self, effective_key: str, fingerprint: str, stored: StoredResult
-    ) -> None:
+    def _local_put(self, effective_key: str, fingerprint: str, stored: StoredResult) -> None:
         if not self.use_local_cache:
             return
         existing = self._local_cache.get(effective_key)

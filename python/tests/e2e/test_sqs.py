@@ -41,9 +41,7 @@ def test_sqs_redelivery_processed_once(sqs_client):
     )["QueueUrl"]
     try:
         processed = {"n": 0}
-        consumer = sqs_consumer(
-            backend=InMemoryBackend(), visibility_timeout_seconds=VISIBILITY
-        )
+        consumer = sqs_consumer(backend=InMemoryBackend(), visibility_timeout_seconds=VISIBILITY)
 
         @consumer.handle
         def process(msg) -> None:
@@ -62,8 +60,8 @@ def test_sqs_redelivery_processed_once(sqs_client):
         m2 = _receive(sqs_client, queue_url)
         assert m2["MessageId"] == m1["MessageId"]
 
-        consumer.dispatch_sync(m2)          # idemkit replays
-        assert processed["n"] == 1          # NOT re-run
+        consumer.dispatch_sync(m2)  # idemkit replays
+        assert processed["n"] == 1  # NOT re-run
         sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=m2["ReceiptHandle"])
     finally:
         sqs_client.delete_queue(QueueUrl=queue_url)

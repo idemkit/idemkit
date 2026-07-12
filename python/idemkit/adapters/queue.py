@@ -35,18 +35,19 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import hashlib
 import inspect
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 from idemkit.backends.base import IdempotencyBackend
 from idemkit.core.codecs import JsonResultCodec, ResultCodec, SideEffectCodec
-from idemkit.core.events import EventEmitter, EventHandler
-from idemkit.core.exceptions import ConfigurationError, StorageError
+from idemkit.core.events import EventEmitter
+from idemkit.core.exceptions import ConfigurationError, PayloadMismatch, StorageError
 from idemkit.core.fingerprint import compose_key
-from idemkit.core.policy import UNSET, IdempotencyPolicy, pick
+from idemkit.core.policy import QueueConfig
 from idemkit.core.runner import IdempotentCore, RunStatus, StoredResult
 from idemkit.core.sync_bridge import register_closable, run_sync
 
@@ -62,6 +63,11 @@ QUEUE_FINGERPRINT = "idemkit-queue-v1"
 # redelivery can't race a still-running handler) while leaving room for the
 # heartbeat to renew it. Override with an explicit ``lease_ttl_seconds``.
 _DEFAULT_LEASE_FRACTION = 0.5
+
+
+def _default_scope(_m: Any) -> tuple[()]:
+    """Default queue scope: no scope (a single shared namespace)."""
+    return ()
 
 
 class ConsumerAction(enum.Enum):
@@ -130,37 +136,39 @@ class IdempotentConsumer:
         self,
         *,
         backend: IdempotencyBackend,
-        key: Callable[[Any], str],
-        visibility_timeout_seconds: float,
-        scope: Callable[[Any], tuple[str, ...] | str | None] = lambda _m: (),
-        lease_ttl_seconds: float | None = UNSET,
-        max_attempts: int = 5,
-        on_exhausted: Callable[[Any, BaseException | None], Awaitable[None] | None]
-        | None = None,
-        receive_count: Callable[[Any], int | None] | None = None,
-        attempt_store: AttemptStore | None = None,
-        cache_result: bool = False,
-        result_codec: ResultCodec[Any, Any] | None = None,
-        expires_after_seconds: float = UNSET,
-        wait_timeout_seconds: float = UNSET,
-        on_storage_error: Literal["fail_closed", "fail_open"] = UNSET,
-        use_local_cache: bool = UNSET,
-        local_cache_max_items: int = UNSET,
-        event_handlers: list[EventHandler] | None = UNSET,
-        config: IdempotencyPolicy | None = None,
+        config: QueueConfig,
         handler: Callable[[Any], Any] | None = None,
     ) -> None:
-        # A reusable IdempotencyPolicy (config=) supplies core-policy defaults; an
-        # explicit keyword above still overrides it for this consumer.
-        lease_ttl_seconds = pick(lease_ttl_seconds, config, "lease_ttl_seconds", None)
-        expires_after_seconds = pick(
-            expires_after_seconds, config, "expires_after_seconds", 86_400.0
-        )
-        wait_timeout_seconds = pick(wait_timeout_seconds, config, "wait_timeout_seconds", 5.0)
-        on_storage_error = pick(on_storage_error, config, "on_storage_error", "fail_closed")
-        use_local_cache = pick(use_local_cache, config, "use_local_cache", False)
-        local_cache_max_items = pick(local_cache_max_items, config, "local_cache_max_items", 1024)
-        event_handlers = list(pick(event_handlers, config, "event_handlers", None) or [])
+        # backend is WHERE state lives; everything else is on the QueueConfig.
+        c = config
+        if c.dedup_id is None:
+            raise ConfigurationError(
+                "idemkit: QueueConfig.dedup_id is required — tell idemkit how to read "
+                "the broker's dedup id from a message (e.g. dedup_id=lambda m: m.message_id). "
+                "The contrib sqs/kafka helpers preset it for you."
+            )
+        if c.visibility_timeout_seconds is None:
+            raise ConfigurationError(
+                "idemkit: QueueConfig.visibility_timeout_seconds is required (the "
+                "broker's visibility window; the lease is derived from it)."
+            )
+        dedup_id = c.dedup_id
+        visibility_timeout_seconds = c.visibility_timeout_seconds
+        scope = c.scope if c.scope is not None else _default_scope
+        max_attempts = c.max_attempts
+        on_exhausted = c.on_exhausted
+        receive_count = c.receive_count
+        attempt_store = c.attempt_store
+        cache_result = c.cache_result
+        result_codec = c.result_codec
+        validation_fingerprint = c.validation_fingerprint
+        lease_ttl_seconds = c.lease_ttl_seconds
+        expires_after_seconds = c.expires_after_seconds
+        wait_timeout_seconds = c.wait_timeout_seconds if c.wait_timeout_seconds is not None else 5.0
+        on_storage_error = c.on_storage_error
+        use_local_cache = c.use_local_cache
+        local_cache_max_items = c.local_cache_max_items
+        event_handlers = list(c.event_handlers)
 
         # Lease vs visibility timeout (§7.2 #1): the lease MUST be shorter than
         # the broker's visibility timeout, or a redelivery can race a handler
@@ -177,7 +185,7 @@ class IdempotentConsumer:
                 "a safe default."
             )
 
-        self.key = key
+        self.dedup_id = dedup_id
         self.scope = scope
         self.visibility_timeout_seconds = visibility_timeout_seconds
         self.lease_ttl_seconds = lease_ttl_seconds
@@ -186,6 +194,7 @@ class IdempotentConsumer:
         self.receive_count = receive_count
         self.expires_after_seconds = expires_after_seconds
         self._cache_result = cache_result
+        self._validation_fingerprint = validation_fingerprint
         self._backend = backend
         self._handler: Callable[[Any], Any] | None = None
         if handler is not None:
@@ -219,9 +228,7 @@ class IdempotentConsumer:
             local_cache_max_items=local_cache_max_items,
         )
 
-    def handle(
-        self, fn: Callable[[Any], Any]
-    ) -> Callable[[Any], Any]:
+    def handle(self, fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
         """Register the message handler. Usable as ``@consumer.handle``.
 
         The handler may be ``async def`` (awaited) or a plain ``def`` (run on a
@@ -239,8 +246,19 @@ class IdempotentConsumer:
     def effective_key(self, message: Any) -> str:
         """The effective key for a message — exposed for tests that need to set
         up a record by hand (spec §9.4 testability)."""
-        dedup_id = self.key(message)
+        dedup_id = self.dedup_id(message)
         return self._effective_key(message, dedup_id)
+
+    def _fingerprint(self, message: Any) -> str:
+        """Payload fingerprint compared on a dedup-id hit (spec §5.1).
+
+        With no ``validation_fingerprint`` it is a constant, so two deliveries of
+        the same dedup id always replay: the broker's id is authoritative. With one
+        set, a redelivery whose fingerprint bytes differ is a ``PayloadMismatch`` —
+        this catches a producer that reused a message id with a different body."""
+        if self._validation_fingerprint is None:
+            return QUEUE_FINGERPRINT
+        return hashlib.sha256(self._validation_fingerprint(message)).hexdigest()
 
     async def dispatch(self, message: Any) -> ConsumerResult:
         """Process one delivery: dedup, run the handler at most once, and report
@@ -251,7 +269,7 @@ class IdempotentConsumer:
                 "handler= to IdempotentConsumer."
             )
 
-        dedup_id = self.key(message)
+        dedup_id = self.dedup_id(message)
         effective_key = self._effective_key(message, dedup_id)
         attempt = await self._attempt_number(message, dedup_id)
         handler = self._handler
@@ -270,7 +288,7 @@ class IdempotentConsumer:
 
         try:
             outcome = await self.core.run_once(
-                effective_key, QUEUE_FINGERPRINT, invoke, encode=encode, heartbeat=True
+                effective_key, self._fingerprint(message), invoke, encode=encode, heartbeat=True
             )
         except StorageError as exc:
             # The idempotency backend is unavailable — an INFRASTRUCTURE problem,
@@ -283,16 +301,27 @@ class IdempotentConsumer:
             # may redeliver. Bounded by max_attempts (§7.2 #4).
             if attempt >= self.max_attempts:
                 await self._exhaust(message, exc)
-                return ConsumerResult(
-                    ConsumerAction.ACK, None, attempt, exhausted=True, error=exc
-                )
+                return ConsumerResult(ConsumerAction.ACK, None, attempt, exhausted=True, error=exc)
             return ConsumerResult(ConsumerAction.RETRY, None, attempt, error=exc)
 
         status = outcome.status
         if status in (RunStatus.EXECUTED, RunStatus.REPLAYED, RunStatus.UNPROTECTED):
             result_value = self._decode_result(outcome.stored)
+            return ConsumerResult(ConsumerAction.ACK, status, attempt, result=result_value)
+
+        if status is RunStatus.MISMATCH:
+            # Same dedup id, DIFFERENT validation payload (validation_fingerprint is
+            # set and the bytes changed): a producer reused a message id with a new
+            # body, or an id collision. Redelivery can't fix a body mismatch, so do
+            # NOT retry forever — hand it to on_exhausted (DLQ) if set, then ack.
+            mismatch = PayloadMismatch(
+                f"idemkit: message dedup id {dedup_id!r} was already processed with a "
+                "different validation payload; refusing to replay a mismatched body."
+            )
+            _logger.error("%s", mismatch)
+            await self._exhaust(message, mismatch)
             return ConsumerResult(
-                ConsumerAction.ACK, status, attempt, result=result_value
+                ConsumerAction.ACK, status, attempt, exhausted=True, error=mismatch
             )
 
         if status is RunStatus.ENCODE_FAILED:

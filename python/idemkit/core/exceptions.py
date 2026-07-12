@@ -61,3 +61,19 @@ class IdempotencyKeyMissing(IdempotencyError):
 class StorageUnavailable(IdempotencyError):
     """Storage was unreachable and the policy is ``fail_closed`` (spec §6.3, the
     503 case). Retry after a short backoff."""
+
+
+class ReplayedError(IdempotencyError):
+    """Raised on replay when a handler's cached exception (see ``cache_exceptions``)
+    cannot be rebuilt as its original type (the type is not importable, or its
+    constructor does not take a single message).
+
+    Carries the original exception's type path and message so a duplicate never
+    silently succeeds. When the original type *can* be rebuilt, that exact type is
+    re-raised instead of this one.
+    """
+
+    def __init__(self, original_type: str, original_message: str) -> None:
+        super().__init__(f"{original_type}: {original_message}")
+        self.original_type = original_type
+        self.original_message = original_message

@@ -65,7 +65,7 @@ def test_kafka_redelivery_processed_once(kafka_bootstrap):
             record.partition,
             record.offset,
         )
-        idem.dispatch_sync(record2)          # idemkit replays
-        assert processed["n"] == 1           # deduped on topic:partition:offset
+        idem.dispatch_sync(record2)  # idemkit replays
+        assert processed["n"] == 1  # deduped on topic:partition:offset
     finally:
         consumer.close()

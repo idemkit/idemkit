@@ -28,9 +28,7 @@ PG_URL = os.environ.get(
 )
 SQS_ENDPOINT = os.environ.get("IDEMKIT_TEST_SQS_ENDPOINT", "http://localhost:4566")
 KAFKA_BOOTSTRAP = os.environ.get("IDEMKIT_TEST_KAFKA_BOOTSTRAP", "localhost:9092")
-RABBITMQ_URL = os.environ.get(
-    "IDEMKIT_TEST_RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"
-)
+RABBITMQ_URL = os.environ.get("IDEMKIT_TEST_RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 
 
 def _reachable(host: str, port: int, timeout: float = 1.0) -> bool:

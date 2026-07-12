@@ -1,6 +1,9 @@
 # Internal strategy, never published
 .private/
 
+# Draft release notes, kept local until the first public release
+python/CHANGELOG.md
+
 # Conference slides / personal materials in this scratch folder
 *.pptx
 *.key

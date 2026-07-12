@@ -147,9 +147,7 @@ class PydanticResultCodec:
     def __init__(self, model: type) -> None:
         # Probe for the v2 then v1 API so we fail loudly at decoration time, not
         # mid-call, if the annotation isn't a pydantic model.
-        if not (
-            hasattr(model, "model_validate") or hasattr(model, "parse_obj")
-        ):
+        if not (hasattr(model, "model_validate") or hasattr(model, "parse_obj")):
             raise TypeError(
                 f"idemkit: result_codec='pydantic' needs a pydantic model return "
                 f"annotation; {model!r} has neither model_validate (v2) nor "
@@ -168,9 +166,7 @@ class PydanticResultCodec:
                 f"idemkit: expected a pydantic model instance, got "
                 f"{type(value).__name__}. Refusing to cache (fail closed, §5.4)."
             )
-        return StoredResult(
-            blob=json.dumps(data).encode("utf-8"), meta={"codec": "pydantic"}
-        )
+        return StoredResult(blob=json.dumps(data).encode("utf-8"), meta={"codec": "pydantic"})
 
     def decode(self, stored: StoredResult) -> Any:
         data = json.loads(stored.blob) if stored.blob else {}
@@ -220,9 +216,7 @@ class PickleResultCodec:
             "codec otherwise (spec §5.4, §12).",
             stacklevel=2,
         )
-        _logger.warning(
-            "idemkit: pickle result codec enabled (RCE risk on decode, §5.4)."
-        )
+        _logger.warning("idemkit: pickle result codec enabled (RCE risk on decode, §5.4).")
 
     def encode(self, value: Any) -> StoredResult:
         import pickle

@@ -10,12 +10,10 @@ One core covers the three places a retry turns into a duplicate: **HTTP requests
 
 - **One atomic claim, not check-then-set.** Two duplicates racing at the same instant, exactly one runs.
 - **Crash-safe.** A worker that dies mid-operation cannot wedge the key or double-execute. A storage-clock lease expires it, and a fencing token rejects the zombie's late write.
-- **Duplicates wait and replay** instead of erroring. The concurrent retry gets the real result, not a 409.
+- **Duplicates wait and replay.** A concurrent retry waits for the in-flight one to finish and gets its result, instead of an immediate conflict error.
 - **Cross-tenant safe.** Scope isolates callers, so one user never sees another's stored response.
 - **async-native, zero-dependency core.** Each backend is one opt-in extra. Nothing is imported until you ask.
-- **Tested, not asserted.** A [conformance suite](#conformance) runs the same vectors against in-memory, real Redis, and real PostgreSQL. That is the part most libraries skip and get wrong.
-
-Every feature has a runnable example in [`examples/`](examples/), grouped by surface. See [Examples](#examples).
+- **Every guarantee has a test.** A [conformance suite](#conformance) runs the same correctness vectors against in-memory, real Redis, and real PostgreSQL.
 
 ## Install
 
@@ -40,6 +38,8 @@ Once published: `pip install "idemkit[redis]"` (or `[postgres]`, `[asgi]`). The 
 
 A client sends `Idempotency-Key: abc-123` on a `POST`. If it retries with the same key, idemkit replays the first response instead of running your handler again.
 
+The middleware wraps the whole app, but by default it only acts on `POST` and `PATCH`, the methods where a retry causes a duplicate. `GET`, `PUT`, `DELETE`, and the rest pass straight through untouched. Change that with `applicable_methods`.
+
 Works in 30 seconds, no infrastructure:
 
 ```python
@@ -62,12 +62,12 @@ curl -X POST localhost:8000/charge -H "Idempotency-Key: k1" -H "Content-Type: ap
 For production, swap the backend and add `scope`:
 
 ```python
-from idemkit import IdempotencyMiddleware, RedisBackend
+from idemkit import HttpConfig, IdempotencyMiddleware, RedisBackend
 
 app.add_middleware(
     IdempotencyMiddleware,
     backend=RedisBackend.from_url("redis://localhost:6379"),
-    scope=lambda req: req.headers["x-user-id"],   # isolate tenants
+    config=HttpConfig(scope=lambda req: req.headers["x-user-id"]),   # isolate tenants
 )
 ```
 
@@ -75,35 +75,7 @@ Without `scope`, idemkit runs single-tenant and warns once. Set `scope_mode="str
 
 > In the middleware, `scope` and `key` receive a lightweight proxy, not a full `Request`. Read identity from `req.headers` or `req.scope`, not `req.state`. If you need `request.state` or typed exceptions, use the per-route decorator below, which gets the real `Request`.
 
-**Flask, Django, or any WSGI app** use the same config with the sync middleware ([example](examples/http/flask_wsgi.py)):
-
-```python
-from flask import Flask
-from idemkit import WSGIIdempotencyMiddleware, RedisBackend
-
-app = Flask(__name__)
-app.wsgi_app = WSGIIdempotencyMiddleware(
-    app.wsgi_app,
-    backend=RedisBackend.from_url("redis://localhost:6379"),
-    scope=lambda req: req.headers["x-user-id"],
-)
-```
-
-**One route instead of the whole app** uses the `Idempotency` decorator. It gets the real Starlette `Request` and raises typed exceptions you can catch:
-
-```python
-from idemkit import Idempotency, RedisBackend
-from starlette.responses import JSONResponse
-
-idem = Idempotency(backend=RedisBackend.from_url("redis://..."), scope=lambda req: req.state.user.id)
-
-@app.post("/charge")
-@idem.protect
-async def charge(request) -> JSONResponse:
-    return JSONResponse({"ok": True}, status_code=201)
-```
-
-Each outcome is `application/problem+json`. Branch on the `type` URI, not the status:
+The middleware returns `application/problem+json` on the unhappy paths. Branch on the `type` URI, not the status:
 
 | Status | When | Client should |
 |---|---|---|
@@ -113,7 +85,14 @@ Each outcome is `application/problem+json`. Branch on the `type` URI, not the st
 | `503` | storage down (fail-closed) | retry after `Retry-After` |
 | `400` | key missing (with `require_key_for_mutations`) or too long | fix the request |
 
-Full walkthrough with scope, `body_fingerprint`, and a redactor: [`examples/http/fastapi_app.py`](examples/http/fastapi_app.py).
+**Other ways to wire HTTP** (same `HttpConfig`, pick by need):
+
+- Whole app, sync (Flask / Django / any WSGI): `WSGIIdempotencyMiddleware`. [flask_wsgi.py](examples/http/flask_wsgi.py)
+- FastAPI routes that return a `dict` and read `request.state`: `contrib.fastapi.idempotent_route` (a route class). [fastapi_route.py](examples/http/fastapi_route.py)
+- One route, catch typed exceptions (e.g. a webhook): the `Idempotency(...).protect` decorator. [route_decorator.py](examples/http/route_decorator.py)
+- Django REST Framework view (reads `request.user`): `contrib.drf.idempotent_view` (a mixin). [drf_view.py](examples/http/drf_view.py)
+
+Full middleware walkthrough with scope, `body_fingerprint`, and a redactor: [fastapi_middleware.py](examples/http/fastapi_middleware.py).
 
 <details>
 <summary><b>All HTTP options</b> (you rarely set past `scope`)</summary>
@@ -125,10 +104,11 @@ Full walkthrough with scope, `body_fingerprint`, and a redactor: [`examples/http
 | `require_key_for_mutations` | `False` | Reject a POST/PATCH with no `Idempotency-Key` | To force clients to send a key |
 | `body_fingerprint` | whole body | Fingerprint only the fields that define the operation | Honest retries 422 because the body has a timestamp/nonce |
 | `response_redactor` | none | Strip PII from the stored copy before caching | Payments/PII: scrub card numbers, SSNs |
+| `response_hook` | none | Modify the response served to a duplicate (runs only on replay) | Tag a replayed response, tweak a cache header |
 | `applicable_methods` | `{POST, PATCH}` | Which HTTP methods get idempotency | You also dedupe PUT/DELETE |
 | `compat_mode` | `"default"` | `"stripe"` returns 409 instead of 422/423 | Only to match Stripe's exact status codes |
 | `key` | the header | Read the key from elsewhere (JWT claim, query, body) | Rare; the key isn't in the standard header |
-| `cacheable_status` | `{200,201,202}` | Which statuses are stored for replay (5xx never is) | Rare; to cache other 2xx |
+| `cacheable_status` | `{200,201,202}` | Which statuses are stored and replayed. Add a client error (e.g. `{200,201,202,422}`) to replay it Stripe-style instead of re-running the handler | You want a deterministic 4xx replayed, not re-executed |
 | `max_body_bytes` / `max_request_body_bytes` | 1 MiB each | Caps on the cached response / buffered request (memory guard) | Rare; larger payloads |
 | `header_allow` / `header_deny` | safe defaults | Which response headers are stored and replayed | Rare; custom header policy |
 
@@ -142,12 +122,14 @@ Plus the shared [core options](#configuration).
 At-least-once brokers redeliver the same message by design. `IdempotentConsumer` wraps your handler so its side effect runs once per dedup id, even under redelivery, concurrent consumers, and crashes. You read the broker's id and visibility timeout, and it tells you to ack or redeliver.
 
 ```python
-from idemkit import IdempotentConsumer, ConsumerAction, InMemoryBackend
+from idemkit import IdempotentConsumer, ConsumerAction, InMemoryBackend, QueueConfig
 
 consumer = IdempotentConsumer(
     backend=InMemoryBackend(),
-    key=lambda msg: msg.message_id,          # however YOUR broker exposes the id
-    visibility_timeout_seconds=30,           # the lease derives from this, kept shorter
+    config=QueueConfig(
+        dedup_id=lambda msg: msg.message_id, # however YOUR broker exposes the id
+        visibility_timeout_seconds=30,       # the lease derives from this, kept shorter
+    ),
 )
 
 @consumer.handle
@@ -159,21 +141,36 @@ result = await consumer.dispatch(msg)
 broker.ack(msg) if result.action is ConsumerAction.ACK else broker.nack(msg)
 ```
 
-A sync worker (threaded SQS/Kafka, Celery) calls `consumer.dispatch_sync(msg)` instead. See [`examples/queue/quickstart.py`](examples/queue/quickstart.py), [`dead_letter.py`](examples/queue/dead_letter.py), and [`cache_result.py`](examples/queue/cache_result.py).
+A sync worker (threaded SQS/Kafka, Celery) calls `consumer.dispatch_sync(msg)` instead. See [`examples/queue/getting_started.py`](examples/queue/getting_started.py), [`dead_letter.py`](examples/queue/dead_letter.py), and [`cache_result.py`](examples/queue/cache_result.py).
+
+**What `dispatch` does with a duplicate**, so you know what to ack:
+
+| The message is | `result.action` | The handler | `result.result` |
+|---|---|---|---|
+| new | `ACK` | runs | its return value |
+| a redelivery of a **completed** one | `ACK` | does not run | replayed (if `cache_result`) |
+| a **concurrent** duplicate, first still running | `RETRY` | does not run | none (redeliver; it replays once the first finishes) |
+| a handler that raised, under `max_attempts` | `RETRY` | ran and failed | none (redeliver) |
+| a handler that raised, at `max_attempts` | `ACK` (`exhausted`) | given up on | none (`on_exhausted` fired) |
+
+`ACK` means remove it from the broker; `RETRY` means leave it for redelivery. A handler that returns `None` records a "processed" marker, so its redelivery is a no-op skip.
 
 **SQS and Kafka come wired.** `idemkit.contrib` presets the dedup id, attempt count, and ack glue so you don't hand-roll it:
 
 ```python
 import boto3
 from idemkit import RedisBackend
+from idemkit import QueueConfig
 from idemkit.contrib.sqs import sqs_consumer, run_forever
 
 sqs = boto3.client("sqs")
 consumer = sqs_consumer(
     backend=RedisBackend.from_url("redis://..."),
     visibility_timeout_seconds=30,
-    max_attempts=5,
-    on_exhausted=lambda msg, exc: sqs.send_message(QueueUrl=DLQ, MessageBody=msg["Body"]),
+    config=QueueConfig(
+        max_attempts=5,
+        on_exhausted=lambda msg, exc: sqs.send_message(QueueUrl=DLQ, MessageBody=msg["Body"]),
+    ),
 )
 
 @consumer.handle
@@ -186,12 +183,16 @@ run_forever(consumer, sqs_client=sqs, queue_url=QUEUE, visibility_timeout=30)  #
 Kafka is the same shape with `from idemkit.contrib.kafka import kafka_consumer` (dedup id is `topic:partition:offset`, and you pass `group_id`). Neither imports a broker SDK. You install and create the client yourself. Runnable versions: [`queue/sqs.py`](examples/queue/sqs.py), [`queue/kafka.py`](examples/queue/kafka.py).
 
 <details>
-<summary><b>All queue options</b></summary>
+<summary><b>All QueueConfig options</b></summary>
+
+Everything lives on one `QueueConfig`. `dedup_id` and `visibility_timeout_seconds` are the required wiring; everything else has a default.
 
 | Option | Default | What it's for | When to touch it |
 |---|---|---|---|
-| `key` | **required** | How to read the broker's dedup id from a message | Always |
+| **Required wiring** | | | |
+| `dedup_id` | **required** | How to read the broker's dedup id from a message | Always |
 | `visibility_timeout_seconds` | **required** | The broker's visibility window; the lease derives from it (kept shorter) | Always (match your broker) |
+| **Queue-specific** | | | |
 | `scope` | single | Isolation namespace (per queue / consumer group) | Several queues share one backend |
 | `max_attempts` | `5` | Retries before a message is given up on | Tune to your DLQ policy |
 | `on_exhausted` | none | Called when `max_attempts` is hit (DLQ, alert) | Set it to route poison messages |
@@ -199,8 +200,9 @@ Kafka is the same shape with `from idemkit.contrib.kafka import kafka_consumer` 
 | `attempt_store` | in-process | Durable attempt counter when the broker has none | Multi-consumer with no broker counter |
 | `cache_result` | `False` | Cache and replay the handler's return value | The handler returns something you want back on redelivery |
 | `result_codec` | json | How that return value is serialized | Non-JSON return types |
+| `validation_fingerprint` | none | Bytes that must match on a dedup-id hit; a reused id with a different body raises `PayloadMismatch` and is routed to `on_exhausted` | A producer might reuse a message id with a different body |
 
-A handler returning `None` records a "processed" marker, so a redelivery is skipped. Plus the shared [core options](#configuration).
+A handler returning `None` records a "processed" marker, so a redelivery is skipped. The `contrib` helpers (`sqs_consumer`, `kafka_consumer`) preset `dedup_id` and `visibility_timeout_seconds` for you. Plus the shared [core options](#configuration).
 </details>
 
 ---
@@ -210,19 +212,19 @@ A handler returning `None` records a "processed" marker, so a redelivery is skip
 Some duplicates are a plain function call, and the caller has no key to give you: an LLM agent re-emitting a tool call, a job that overlaps, an internal call. `@idempotent` dedupes on the **arguments**.
 
 ```python
-from idemkit import idempotent, RedisBackend
+from idemkit import MethodConfig, idempotent, RedisBackend
 
-@idempotent(backend=RedisBackend.from_url("redis://..."), key_fields=["order_id", "amount"])
+@idempotent(backend=RedisBackend.from_url("redis://..."), config=MethodConfig(key_fields=["order_id", "amount"]))
 async def refund(*, order_id, amount):
     return await payments.refund(order_id, amount)   # runs once per (order_id, amount)
 ```
 
-Call it twice with the same `order_id` and `amount`, and the refund happens once. The second call replays the first result. Sync code uses `idempotent_sync`. Like HTTP, `scope` is optional: with none idemkit runs single-tenant and warns once, and you pass it to isolate callers (per user, or per agent session). See [`method/quickstart.py`](examples/method/quickstart.py), [`method/agent_loop.py`](examples/method/agent_loop.py), and [`method/sync.py`](examples/method/sync.py).
+Call it twice with the same `order_id` and `amount`, and the refund happens once. The second call replays the first result. Sync code uses `idempotent_sync`. Like HTTP, `scope` is optional: with none idemkit runs single-tenant and warns once, and you pass it to isolate callers (per user, or per agent session). See [`method/getting_started.py`](examples/method/getting_started.py), [`method/agent_loop.py`](examples/method/agent_loop.py), and [`method/sync_function.py`](examples/method/sync_function.py).
 
 **Nested fields, without a query language.** A `key_fields` entry can be a dotted path into a nested dict or object, so you don't need a callback for the common case:
 
 ```python
-@idempotent(backend=backend, key_fields=["order.id", "customer.email"])
+@idempotent(backend=backend, config=MethodConfig(key_fields=["order.id", "customer.email"]))
 async def book(*, order, customer): ...
 ```
 
@@ -230,7 +232,7 @@ async def book(*, order, customer): ...
 
 > **Dedupe on the arguments, never a per-call id.** An LLM mints a fresh `tool_call_id` every turn (OpenAI `call_…`, Anthropic `toolu_…`). Passing that as the key defeats the purpose, because a retry carries a new id and runs the side effect again. The stable identity of a call is its arguments, so the default is `key_fields`. idemkit warns if you hand it a key that looks like a per-turn id.
 
-**This is not memoization.** `functools.lru_cache` lives in one process, forgets on restart, and has no concept of a concurrent call. idemkit's claim is atomic across processes, survives a crash (lease plus fencing), makes a parallel duplicate *wait* for the first to finish, and scopes per caller. That is the whole point.
+**This is not memoization.** `functools.lru_cache` lives in one process, forgets on restart, and has no concept of a concurrent call. idemkit's claim is atomic across processes and survives a crash (lease plus fencing). A parallel duplicate waits for the first to finish, and each caller is scoped separately.
 
 **MCP and agent tools.** MCP tools can advertise `idempotentHint`, but nothing enforces it. `idemkit.contrib.mcp` makes it real ([example](examples/method/mcp.py)):
 
@@ -241,7 +243,7 @@ from idemkit.contrib.mcp import mcp_idempotent
 mcp = FastMCP("payments")
 
 @mcp.tool()
-@mcp_idempotent(backend=backend, key_fields=["order_id", "amount"])
+@mcp_idempotent(backend=backend, config=MethodConfig(key_fields=["order_id", "amount"]))
 async def refund(order_id: str, amount: int) -> dict:
     return await payments.refund(order_id, amount)   # agent re-plan replays, no double refund
 ```
@@ -261,6 +263,8 @@ Anthropic tool use and OpenAI function calling work the same way. Parse the tool
 | `version` | `"1"` | Bump to invalidate cached results | The function's behavior changes |
 | `normalize_args` | none | Derive the key from a function of the args | `key_fields` can't express it (nested fields) |
 | `strict_keys` | `True` | Warn when a volatile-looking field lands in the key | Leave on; disable only for a false-positive warning |
+| `require_key` | `False` | Refuse to derive the key from all arguments; the call must name its key (`key_fields`, `normalize_args`, or a per-call `idempotency_key`), else `IdempotencyKeyMissing` | Enforce, don't just warn, that every function names its key |
+| `cache_exceptions` | `()` | Exception types that are deterministic: cache and re-raise them on a duplicate instead of re-running the handler | A validation/business-rule error should replay, not re-execute |
 
 Keep one irreversible side effect per function: idemkit dedupes the call, not the steps inside it. Plus the shared [core options](#configuration).
 </details>
@@ -269,18 +273,9 @@ Keep one irreversible side effect per function: idemkit dedupes the call, not th
 
 ## Examples
 
-Runnable, self-contained scripts in [`examples/`](examples/), grouped by surface. Most use `InMemoryBackend` with fake brokers or models, so they run with no infrastructure:
+Clean, copy-paste snippets in [`examples/`](examples/), grouped by surface (`http/`, `queue/`, `method/`, `shared/`). Each shows only the integration code, uses `InMemoryBackend` so it needs no setup, and is covered by a test, so a broken example fails CI.
 
-```bash
-pip install -e ".[asgi]"
-python examples/method/quickstart.py
-```
-
-| Folder | What's inside |
-|---|---|
-| [`http/`](examples/http/) | `double_charge.py` (the 30-second pitch), `fastapi.py`, `flask_wsgi.py`, `per_route.py` |
-| [`queue/`](examples/queue/) | `quickstart.py`, `sqs.py`, `kafka.py`, `dead_letter.py`, `cache_result.py` |
-| [`method/`](examples/method/) | `quickstart.py`, `sync.py`, `agent_loop.py` (LLM agent), `mcp.py`, `manual_clock.py` (testing) |
+Browse the full "I want to..." index in [`examples/README.md`](examples/README.md). Each folder has a `getting_started.py`, an `all_options.py`, and one file per use case (SQS, DLQ, MCP tools, PII redaction, ...). Run them with `pytest tests/examples`.
 
 ## Backends
 
@@ -290,59 +285,42 @@ python examples/method/quickstart.py
 | `RedisBackend` | Most production deployments. Redis 6+ and Cluster. |
 | `PostgresBackend` | When you already run Postgres. Ships `idemkit init-pg` (schema) and `idemkit pg-vacuum` (cleanup). |
 
-The same backend serves all three surfaces. Writing your own is a five-method `Protocol` (`claim`, `complete`, `release`, `renew`, `wait_for_completion`). Validate it against the [conformance suite](#conformance).
+The same backend serves all three surfaces. Writing your own is a five-method `Protocol` (`claim`, `complete`, `release`, `renew`, `wait_for_completion`); validate it against the [conformance suite](#conformance) (example: [`custom_backend.py`](examples/shared/custom_backend.py)).
 
-Redis and Postgres hold a pool and a background listener. Close them on shutdown via the ASGI lifespan, or use the backend as an async context manager:
+To share one datastore with other data, or run isolated instances on it, `RedisBackend(namespace="idemkit")` prefixes every key, and `PostgresBackend(table="idempotency_keys")` uses a custom table (create it with `idemkit init-pg <url> --table idempotency_keys`). Full setup for all three backends is in [`backends.py`](examples/shared/backends.py).
+
+Redis and Postgres hold a pool and a background listener. The ASGI middleware closes the backend it was given on `lifespan` shutdown, so the one-line install does not leak (pass `manage_backend=False` to opt out). Outside ASGI, use the backend as an async context manager:
 
 ```python
 async with RedisBackend.from_url("redis://...") as backend:
     ...   # closed automatically
 ```
 
-On **Redis Cluster** no hash tags are needed: each atomic claim and complete is a single-key script, and the in-flight-wait pub/sub broadcasts cluster-wide. On **Postgres**, run `idemkit pg-vacuum` on a cron (e.g. daily) to drop expired records, or the table grows unbounded.
+`from_url` sets a default connection timeout so an unreachable or hung backend fails fast (fail-closed) instead of blocking a request: Redis gets `socket_connect_timeout`, Postgres gets `command_timeout`. Override either via a keyword.
+
+On **Redis Cluster** no hash tags are needed: each atomic claim and complete is a single-key script, and the in-flight-wait pub/sub broadcasts cluster-wide. **Postgres needs a reaper:** correctness does not depend on it (expiry is enforced on read), but the table grows unbounded unless you schedule `idemkit pg-vacuum` (see [Configuration](docs/configuration.md#postgres-schedule-the-reaper)).
 
 ## Configuration
 
-**You rarely set any of these.** The defaults are production-sane; reach for a knob only when you have a reason. Every surface takes plain keyword arguments (no config object), and the core-policy names are the same on all three surfaces. A few defaults differ per surface, shown below.
+**You rarely set any of these.** The defaults are production-sane. Each surface takes one config object (`HttpConfig` / `QueueConfig` / `MethodConfig`), passed as `config=`; that is the one way in. The **datastore** (Postgres table, Redis namespace) is configured on the backend, not here.
 
-The three time settings do different jobs. Don't confuse the in-flight lease with the result-retention TTL:
+The knobs you might actually reach for:
 
-```
-lease   : how long ONE run may hold the key       (queue: kept shorter than the visibility timeout)
-wait    : how long a DUPLICATE waits for that run before giving up
-result  : how long the FINISHED result is kept for replay   (a different thing entirely)
-```
-
-| Option | Default | What it does, and when to change it |
+| Option | Default | When to touch it |
 |---|---|---|
-| `lease_ttl_seconds` | `30` HTTP / `60` method / derived (queue) | How long one execution may hold the key before it's assumed dead. Renewed by a heartbeat on queue and method. Raise it above your handler's p99. |
-| `wait_timeout_seconds` | `10` HTTP and method / `5` queue | How long a concurrent duplicate waits for the in-flight run before giving up (HTTP returns 423; queue retries). Raise it if honest duplicates give up too soon. |
-| `expires_after_seconds` | `86400` (24h) | How long the finished result is kept for replay. Set it above your longest honest retry gap. |
-| `on_storage_error` | `"fail_closed"` (the safe default) | Backend down: `fail_closed` rejects the request; `fail_open` runs it unprotected, so a duplicate can slip through. Switch to `fail_open` only if availability beats dedup. |
-| `event_handlers` | `[]` | One structured event per operation. **You** route it to Prometheus, OpenTelemetry, or logs; nothing is exported for you (see below). |
+| `lease_ttl_seconds` | `30` HTTP / `60` method / derived (queue) | Raise it above your handler's p99. **HTTP does not heartbeat**, so this matters most on HTTP. |
+| `expires_after_seconds` | `86400` (24h) | Set it above your longest honest retry gap. |
+| `on_storage_error` | `"fail_closed"` | Switch to `fail_open` only if availability beats dedup. |
+| `event_handlers` | `[]` | Wire a ready-made metrics/logging handler, or your own. |
 
-**Set it once, reuse it.** If you have many consumers or decorators, build an `IdempotencyPolicy` once and pass `config=` instead of repeating these keywords. A keyword passed directly still overrides the policy for that one:
-
-```python
-from idemkit import IdempotencyPolicy, idempotent, IdempotentConsumer
-
-policy = IdempotencyPolicy(expires_after_seconds=3600, on_storage_error="fail_open")
-
-@idempotent(backend=backend, key_fields=["order_id"], config=policy)
-async def refund(*, order_id): ...
-
-consumer = IdempotentConsumer(backend=backend, key=..., visibility_timeout_seconds=30, config=policy)
-```
-
-The same policy works on the HTTP middleware too (it fills in the HTTP defaults); pass HTTP-only options like `scope` as keywords alongside it:
+Full reference, the three time-settings explained, and the observability/alerting guide: **[docs/configuration.md](docs/configuration.md)**. Ready-made exporters:
 
 ```python
-app.add_middleware(IdempotencyMiddleware, backend=backend, config=policy, scope=lambda req: req.headers["x-user-id"])
+from idemkit.contrib.prometheus import prometheus_handler   # pip install "idemkit[prometheus]"
+from idemkit.contrib.logging import logging_handler         # zero deps
+
+config = HttpConfig(event_handlers=(prometheus_handler(), logging_handler()))
 ```
-
-Each surface adds its own options, fully listed (with defaults and when to touch them) in the collapsible in its section: [HTTP](#http), [Queue](#queue-consumers), [Method](#method-calls-and-ai-tools). The one shared advanced knob is `use_local_cache` / `local_cache_max_items`: an in-process replay cache, off by default, that skips a backend round-trip for a key already seen in the same process. Almost nobody needs it.
-
-Each event carries the decision (`new`, `replayed`, `in_flight_wait`, `conflict`, and so on), the hashed key (safe to log), latency, and backend. Every surface uses the same event, so one dashboard covers all three; you supply the exporter.
 
 ## Limitations and when not to use it
 
@@ -354,6 +332,12 @@ idemkit is deliberately narrow. Know these before you put it on a money path:
 - **`expires_after_seconds` bounds the replay window.** A retry after the TTL re-executes. Size it above your longest honest retry gap.
 - **Not a workflow engine.** For multi-step orchestration with recovery points, use Temporal, DBOS, or Restate. idemkit makes *one* operation safe to retry.
 - **Effectively-once, not exactly-once.** At-least-once delivery plus idempotent execution. No system delivers exactly-once.
+- **Postgres needs a reaper.** Correctness is fine without one (expiry is enforced on read), but the table grows unbounded until you schedule `idemkit pg-vacuum`. Redis keys self-expire, so Redis needs nothing.
+- **A raised exception is not cached (method/queue).** `@idempotent` caches a returned value; a handler that *raises* releases the claim so a retry re-runs it. That is right for transient errors, but a deterministic exception re-executes each retry. Return a result instead of raising if you want it replayed. (HTTP can replay a client error via `cacheable_status`.)
+- **The sync API runs on a shared background loop.** `idempotent_sync` / `dispatch_sync` bridge to the async core through one process-wide event loop. It is correct and fine for typical Flask/Django/Celery loads, but it is a shim over the async core rather than a native sync path. Under very high sync concurrency, prefer the async API.
+- **HTTP does not renew the lease.** Queue and method handlers heartbeat, so a slow one keeps its claim. HTTP does not: an HTTP handler that runs longer than `lease_ttl_seconds` (default 30s) can have its claim reclaimed by a concurrent retry, which then runs a second time (the first handler's write is fenced, not cancelled). Size `lease_ttl_seconds` above your HTTP handler's p99, or push the idempotency key downstream for a slow charge.
+- **A non-2xx HTTP response re-executes on retry.** By default only `{200,201,202}` are cached; any other status releases the claim, so a retry re-runs the handler. That is usually right (a `409` may succeed later), but a handler that fires a side effect then returns a non-2xx will re-fire it. Add the status to `cacheable_status` to replay it instead.
+- **The in-flight-wait channel can drop, then self-heals.** If the Redis pub/sub or Postgres LISTEN channel dies (a failover), waiting duplicates fall back to a bounded poll (correctness holds) and the channel is re-established on the next waiter. Expect a brief latency bump on conflicts during a failover, not a hang.
 
 ## Testing
 
@@ -368,7 +352,7 @@ async def test_charge_is_idempotent():
     assert charges_in_db() == 1
 ```
 
-For lease expiry and TTL behavior, pass a `ManualClock` to `InMemoryBackend` and advance it instead of sleeping ([example](examples/method/manual_clock.py)).
+For lease expiry and TTL behavior, pass a `ManualClock` to `InMemoryBackend` and advance it instead of sleeping ([example](examples/method/record_expiration.py)).
 
 ## Conformance
 
@@ -380,32 +364,22 @@ idemkit conformance --redis redis://localhost:6379 --postgres postgresql://user:
 
 Every surface's vectors pass on real Redis and PostgreSQL. The language-neutral descriptions live in [`spec/conformance.yaml`](../spec/conformance.yaml).
 
-On top of the example-based suite, a **property-based, model-based test** (Hypothesis, in `tests/test_property_stateful.py`) drives random sequences of claim / complete / release / renew / clock-advance against each backend and a reference model, and asserts they agree at every step plus a replay-stability invariant. It runs on in-memory (with deterministic clock control), real Redis (Lua), and real PostgreSQL (SQL), so the fencing + lease + TTL state machine is checked across orderings and timings a hand-written test would miss, not just asserted.
+Beyond the fixed vectors, three checks run against every backend:
+
+- **Property-based model check** (Hypothesis) drives random operation sequences against the backend and a reference model, and asserts they never diverge.
+- **Fault injection** raises transient storage errors under concurrency to confirm the guarantees hold.
+- **Clock-skew tests** prove lease decisions follow the storage clock, not the app's.
+
+The full picture, including the honest limits, is in [CORRECTNESS.md](CORRECTNESS.md).
 
 ## Contributing
 
 ```bash
 cd python/ && python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest                     # Docker-free; Redis tests use fakeredis
+make check                 # the gate CI runs: lint + typecheck + full suite
 ```
 
-fakeredis is not real Redis. Before a release, run against real servers:
-
-```bash
-docker run -d --rm -p 6379:6379 redis:7-alpine
-docker run -d --rm -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:16-alpine
-IDEMKIT_TEST_REDIS_URL=redis://localhost:6379 \
-IDEMKIT_TEST_PG_URL=postgresql://postgres:test@localhost:55432/postgres pytest
-```
-
-Every example is run by `tests/test_examples.py`, so an example that breaks fails CI. End-to-end tests against locally dockerized brokers (SQS, Kafka, RabbitMQ) live in `tests/e2e/`; they are excluded from the default run:
-
-```bash
-docker compose -f tests/e2e/docker-compose.yml up -d
-pip install -e ".[dev,e2e]" && pytest -m e2e
-```
-
-House rules: concurrency changes need a race test (N concurrent, exactly one execution); spec changes update `conformance.yaml`; bug fixes include a regression test that fails before the fix.
+Setup, the `Makefile` targets, running the e2e brokers, and the house rules are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 Apache-2.0. See [`LICENSE`](../LICENSE). Design and rationale are in [`spec/idemkit-unified-spec.md`](../spec/idemkit-unified-spec.md).

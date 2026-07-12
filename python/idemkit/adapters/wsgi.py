@@ -11,13 +11,13 @@ format, same size/streaming bypass, same fail-closed scope rule.
 Usage (Flask)::
 
     from flask import Flask
-    from idemkit import WSGIIdempotencyMiddleware, RedisBackend
+    from idemkit import HttpConfig, WSGIIdempotencyMiddleware, RedisBackend
 
     app = Flask(__name__)
     app.wsgi_app = WSGIIdempotencyMiddleware(
         app.wsgi_app,
         backend=RedisBackend.from_url("redis://localhost:6379"),
-        scope=lambda req: req.headers["x-user-id"],
+        config=HttpConfig(scope=lambda req: req.headers["x-user-id"]),
     )
 
 Django: wrap ``application`` in ``wsgi.py`` the same way. Extractors (``scope`` /
@@ -37,7 +37,7 @@ from idemkit.adapters.asgi import _CaseInsensitiveHeaders, _unwrap_sf_string
 from idemkit.backends.base import IdempotencyBackend
 from idemkit.core.config import IdempotencyConfig, resolve_http_config
 from idemkit.core.engine import IdempotencyEngine, NeutralRequest, NeutralResponse
-from idemkit.core.policy import IdempotencyPolicy
+from idemkit.core.policy import HttpConfig
 from idemkit.core.sync_bridge import register_closable, run_sync
 
 _logger = logging.getLogger(__name__)
@@ -77,10 +77,9 @@ class WSGIIdempotencyMiddleware:
         app: WSGIApp,
         *,
         backend: IdempotencyBackend,
-        config: IdempotencyConfig | IdempotencyPolicy | None = None,
-        **config_kwargs: Any,
+        config: HttpConfig | IdempotencyConfig | None = None,
     ) -> None:
-        config = resolve_http_config(config, config_kwargs)
+        config = resolve_http_config(config)
         self.app = app
         self.config = config
         self.backend = backend
@@ -91,9 +90,7 @@ class WSGIIdempotencyMiddleware:
         if type(backend).__name__ == "InMemoryBackend":
             _warn_inmemory_backend()
 
-    def __call__(
-        self, environ: WSGIEnviron, start_response: StartResponse
-    ) -> Iterable[bytes]:
+    def __call__(self, environ: WSGIEnviron, start_response: StartResponse) -> Iterable[bytes]:
         method = (environ.get("REQUEST_METHOD") or "GET").upper()
         path = environ.get("PATH_INFO") or "/"
         query = environ.get("QUERY_STRING") or ""
@@ -214,9 +211,7 @@ class WSGIIdempotencyMiddleware:
             self.engine.on_complete(
                 effective_key,
                 claim_token,
-                NeutralResponse(
-                    status=status_code, headers=_headers_to_dict(hdrs), body=body
-                ),
+                NeutralResponse(status=status_code, headers=_headers_to_dict(hdrs), body=body),
             )
         )
         start_response(status, hdrs)
@@ -235,9 +230,7 @@ class WSGIIdempotencyMiddleware:
                 return None
         return _unwrap_sf_string(headers.get("idempotency-key"))
 
-    def _extract_scope(
-        self, environ: WSGIEnviron, headers: dict[str, str]
-    ) -> str | None:
+    def _extract_scope(self, environ: WSGIEnviron, headers: dict[str, str]) -> str | None:
         if self.config.scope is None:
             return None  # single-tenant mode
         try:
@@ -262,9 +255,7 @@ class _WsgiRequestProxy:
 
     __slots__ = ("body", "environ", "headers")
 
-    def __init__(
-        self, environ: WSGIEnviron, headers: dict[str, str], body: bytes
-    ) -> None:
+    def __init__(self, environ: WSGIEnviron, headers: dict[str, str], body: bytes) -> None:
         self.environ = environ
         self.headers = headers
         self.body = body
@@ -310,9 +301,7 @@ class _PrefixedInput:
         return rest + tail
 
 
-def _read_request_body(
-    stream: Any, max_bytes: int | None
-) -> tuple[bytes, bool, bytes]:
+def _read_request_body(stream: Any, max_bytes: int | None) -> tuple[bytes, bool, bytes]:
     """Read the request body up to ``max_bytes`` (None = unbounded).
 
     Returns ``(body, oversized, tail)``. When oversized, ``body`` holds exactly
@@ -362,9 +351,7 @@ def _parse_captured(captured: dict[str, Any]) -> tuple[str, list[tuple[str, str]
     status = captured["status"]
     headers = captured["headers"]
     if status is None or headers is None:
-        raise RuntimeError(
-            "idemkit: the downstream WSGI app did not call start_response."
-        )
+        raise RuntimeError("idemkit: the downstream WSGI app did not call start_response.")
     return str(status), list(headers)
 
 
@@ -380,9 +367,7 @@ def _send(start_response: StartResponse, response: NeutralResponse) -> list[byte
     return [response.body]
 
 
-def _chain(
-    buffered: list[bytes], rest: Iterator[bytes], closable: Any
-) -> Iterator[bytes]:
+def _chain(buffered: list[bytes], rest: Iterator[bytes], closable: Any) -> Iterator[bytes]:
     yield from buffered
     try:
         yield from rest
