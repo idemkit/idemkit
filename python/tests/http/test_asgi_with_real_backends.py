@@ -3,8 +3,9 @@
 The 12 tests in test_asgi_middleware.py exercise the middleware with
 ``InMemoryBackend``. These tests re-run the most critical behaviors
 against ``RedisBackend`` (via fakeredis) and ``PostgresBackend`` (via
-Docker) so we know the full stack works with the production backends —
-not just the engine-backend layer in isolation.
+Docker) — plus ``MongoBackend`` and ``DynamoBackend`` when their endpoints
+are configured — so we know the full stack works with the production
+backends, not just the engine-backend layer in isolation.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from idemkit import IdempotencyMiddleware  # noqa: E402
 from idemkit.backends.postgres import PostgresBackend, init_pg  # noqa: E402
 from idemkit.backends.redis import RedisBackend  # noqa: E402
 from idemkit.core.config import IdempotencyConfig  # noqa: E402
+from tests._backends import EXTRA_BACKENDS, make_dynamo_backend, make_mongo_backend  # noqa: E402
 
 PG_URL = os.environ.get("IDEMKIT_TEST_PG_URL")
 REDIS_URL = os.environ.get("IDEMKIT_TEST_REDIS_URL")
@@ -41,7 +43,7 @@ async def _pg_schema():
     return
 
 
-@pytest.fixture(params=["redis", "postgres"])
+@pytest.fixture(params=["redis", "postgres", *EXTRA_BACKENDS])
 async def backend(request):
     if request.param == "redis":
         if REDIS_URL:
@@ -60,6 +62,18 @@ async def backend(request):
         if not PG_URL:
             pytest.skip("set IDEMKIT_TEST_PG_URL to enable PG tests")
         b = PostgresBackend.from_url(PG_URL, min_size=2, max_size=8)
+        try:
+            yield b
+        finally:
+            await b.aclose()
+    elif request.param == "mongo":
+        b = make_mongo_backend()
+        try:
+            yield b
+        finally:
+            await b.aclose()
+    elif request.param == "dynamodb":
+        b = make_dynamo_backend()
         try:
             yield b
         finally:

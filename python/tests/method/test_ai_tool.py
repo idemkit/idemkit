@@ -3,7 +3,7 @@
 A side-effect counter stands in for a tool that charges a card or books a flight:
 it must run once per (tool, version, selected-args, caller), no matter how often
 an agent re-emits the call. The six required vectors (§8.4) run against InMemory,
-real Redis, and real PostgreSQL.
+real Redis, and real PostgreSQL — plus MongoDB and DynamoDB when configured.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from idemkit.core.exceptions import (  # noqa: E402
     PayloadMismatch,
     ReplayedError,
 )
+from tests._backends import EXTRA_BACKENDS, make_dynamo_backend, make_mongo_backend  # noqa: E402
 
 
 async def test_validation_fingerprint_catches_payload_mismatch(backend) -> None:
@@ -196,7 +197,7 @@ async def _pg_schema():
     return
 
 
-@pytest.fixture(params=["memory", "redis", "postgres"])
+@pytest.fixture(params=["memory", "redis", "postgres", *EXTRA_BACKENDS])
 async def backend(request):
     if request.param == "memory":
         yield InMemoryBackend()
@@ -217,6 +218,18 @@ async def backend(request):
         if not PG_URL:
             pytest.skip("set IDEMKIT_TEST_PG_URL to enable PostgreSQL contract tests")
         b = PostgresBackend.from_url(PG_URL, min_size=2, max_size=8)
+        try:
+            yield b
+        finally:
+            await b.aclose()
+    elif request.param == "mongo":
+        b = make_mongo_backend()
+        try:
+            yield b
+        finally:
+            await b.aclose()
+    elif request.param == "dynamodb":
+        b = make_dynamo_backend()
         try:
             yield b
         finally:
@@ -450,11 +463,13 @@ async def test_ambient_caller_identity_zero_arg(backend) -> None:
         calls += 1
         return {"n": calls}
 
-    session.set("agent-1")
+    # Unique per run: the key is (amount, scope), and Mongo/Dynamo stores persist
+    # across runs (unlike flushed Redis / truncated PG).
+    session.set(f"agent-1-{uuid.uuid4().hex}")
     await charge(amount=100)
     await charge(amount=100)
     assert calls == 1
-    session.set("agent-2")
+    session.set(f"agent-2-{uuid.uuid4().hex}")
     await charge(amount=100)
     assert calls == 2
 
