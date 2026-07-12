@@ -13,7 +13,7 @@ from typing import Any
 
 from idemkit import problem_details
 from idemkit.backends.base import IdempotencyBackend
-from idemkit.core.config import IdempotencyConfig, resolve_http_config
+from idemkit.core.config import resolve_http_config
 from idemkit.core.engine import IdempotencyEngine, NeutralRequest, NeutralResponse
 from idemkit.core.policy import HttpConfig
 
@@ -69,15 +69,15 @@ class IdempotencyMiddleware:
         app: ASGIApp,
         *,
         backend: IdempotencyBackend,
-        config: HttpConfig | IdempotencyConfig | None = None,
+        config: HttpConfig | None = None,
         manage_backend: bool = True,
     ) -> None:
-        config = resolve_http_config(config)
+        resolved = resolve_http_config(config)
         self.app = app
-        self.config = config
+        self.config = resolved
         self._backend = backend
         self._manage_backend = manage_backend
-        self.engine = IdempotencyEngine(backend=backend, config=config)
+        self.engine = IdempotencyEngine(backend=backend, config=resolved)
         if type(backend).__name__ == "InMemoryBackend":
             _warn_inmemory_backend()
 

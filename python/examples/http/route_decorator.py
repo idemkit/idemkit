@@ -1,9 +1,10 @@
-"""You want just ONE route idempotent (e.g. a webhook) and to catch typed exceptions in code.
+"""You want just ONE route idempotent and to catch idemkit's typed exceptions in code.
 
 Unlike the app-wide middleware it hands your handler the real Starlette Request
 (so req.state works) and raises typed exceptions you can catch. Your handler must
 return a Response. For FastAPI routes that return a dict use fastapi_route.py; for
-the whole app use fastapi_middleware.py.
+the whole app use fastapi_middleware.py; for inbound provider webhooks (dedup on the
+event id, not an Idempotency-Key) see webhook.py.
 """
 
 from fastapi import FastAPI
@@ -22,7 +23,7 @@ app = FastAPI()
 idem = Idempotency(
     # InMemoryBackend is dev only; prod backend (Redis/Postgres): ../shared/backends.py
     backend=InMemoryBackend(),
-    config=HttpConfig(scope=lambda req: req.headers["x-user-id"]),
+    config=HttpConfig(scope=lambda req: req.headers.get("x-user-id", "anonymous")),
 )
 
 

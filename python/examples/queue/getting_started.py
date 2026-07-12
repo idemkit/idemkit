@@ -37,3 +37,5 @@ async def process(msg) -> None:
 # In your poll loop:
 #   result = await consumer.dispatch(msg)
 #   broker.ack(msg) if result.action is ConsumerAction.ACK else broker.nack(msg)
+# A full, runnable loop for any broker (RabbitMQ/NATS/...) is in generic_broker.py;
+# SQS and Kafka have ready-made helpers in sqs.py / kafka.py.

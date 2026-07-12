@@ -1,8 +1,9 @@
-"""Move from the dev InMemoryBackend to a real Redis or Postgres for production.
+"""Move from the dev InMemoryBackend to a real store (Redis, Postgres, MongoDB, or
+DynamoDB) for production.
 
 Every other example uses InMemoryBackend so it runs with no setup, but that
-backend is dev-only (one process). In production you build a RedisBackend or
-PostgresBackend and pass it to the exact same surfaces:
+backend is dev-only (one process). In production you build one of the real
+backends and pass it to the exact same surfaces:
 
     app.add_middleware(IdempotencyMiddleware, backend=backend)        # HTTP
     IdempotentConsumer(backend=backend, config=QueueConfig(...))      # queue
@@ -46,4 +47,36 @@ def postgres():
     return PostgresBackend.from_url(
         "postgresql://user:pass@localhost:5432/db",
         table="idempotency_keys",  # default is "idemkit_records"
+    )
+
+
+def mongo():
+    from idemkit.backends.mongo import MongoBackend
+
+    # When you already run MongoDB (4.2+). Leases use the server clock ($$NOW); a
+    # TTL index self-reaps expired docs, so there is nothing to vacuum.
+    return MongoBackend.from_url(
+        "mongodb://localhost:27017",
+        database="idemkit",
+        collection="idemkit_records",  # the default
+    )
+
+
+def dynamodb():
+    from idemkit.backends.dynamodb import DynamoBackend
+
+    # When you already run on DynamoDB (managed, nothing to operate). The table is
+    # created on first use (on-demand billing, TTL on `ttl`). Credentials/region come
+    # from the environment like any boto3 app; endpoint_url is only for DynamoDB
+    # Local / LocalStack in tests.
+    # NOTE: DynamoDB leases use the CLIENT clock (see the backend's docstring).
+    # In production, pre-create the table and pass create_table=False.
+    # Timeouts are flat kwargs (default only if omitted), like the other backends;
+    # advanced callers can pass a full botocore config=Config(...) instead.
+    return DynamoBackend(
+        table="idempotency_keys",
+        region_name="us-east-1",
+        connect_timeout=5,
+        read_timeout=10,
+        max_retries=3,
     )

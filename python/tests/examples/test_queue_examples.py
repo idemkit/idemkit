@@ -24,6 +24,16 @@ async def test_getting_started() -> None:
     assert spy.call_count == 1
 
 
+async def test_generic_broker() -> None:
+    mod = load_module("queue/generic_broker.py")
+    msg = {"id": f"order-{uuid.uuid4()}"}  # unique per run
+    with mock.patch.object(mod, "charge_customer", wraps=mod.charge_customer) as spy:
+        r1 = await mod.consumer.dispatch(msg)
+        await mod.consumer.dispatch(msg)  # redelivery
+    assert r1.action is ConsumerAction.ACK
+    assert spy.call_count == 1
+
+
 def test_sqs() -> None:
     mod = load_module("queue/sqs.py")
     sqs_msg = {

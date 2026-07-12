@@ -243,3 +243,51 @@ if _PG_URL:
         max_examples=20, stateful_step_count=20, deadline=None
     )
     TestPostgresStateMachine = PostgresStateMachine.TestCase
+
+
+_MONGO_URL = os.environ.get("IDEMKIT_TEST_MONGO_URL")
+if _MONGO_URL:
+    import time
+
+    class MongoStateMachine(_BaseStateMachine):
+        controllable_clock = False
+
+        def _key_prefix(self) -> str:
+            return f"prop-{uuid.uuid4().hex[:8]}"
+
+        def _setup(self) -> tuple[Any, Any]:
+            from idemkit.backends.mongo import MongoBackend
+
+            return time.monotonic, MongoBackend.from_url(_MONGO_URL, database="idemkit_prop")
+
+    MongoStateMachine.TestCase.settings = settings(
+        max_examples=20, stateful_step_count=20, deadline=None
+    )
+    TestMongoStateMachine = MongoStateMachine.TestCase
+
+
+_DYNAMODB_ENDPOINT = os.environ.get("IDEMKIT_TEST_DYNAMODB_ENDPOINT")
+if _DYNAMODB_ENDPOINT:
+    import time
+
+    class DynamoStateMachine(_BaseStateMachine):
+        controllable_clock = False
+
+        def _key_prefix(self) -> str:
+            return f"prop-{uuid.uuid4().hex[:8]}"
+
+        def _setup(self) -> tuple[Any, Any]:
+            from idemkit.backends.dynamodb import DynamoBackend
+
+            return time.monotonic, DynamoBackend(
+                table="idemkit_prop",
+                endpoint_url=_DYNAMODB_ENDPOINT,
+                region_name="us-east-1",
+                aws_access_key_id="test",
+                aws_secret_access_key="test",
+            )
+
+    DynamoStateMachine.TestCase.settings = settings(
+        max_examples=20, stateful_step_count=20, deadline=None
+    )
+    TestDynamoStateMachine = DynamoStateMachine.TestCase

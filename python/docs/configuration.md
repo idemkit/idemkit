@@ -31,7 +31,7 @@ expires_after_seconds AFTER IT FINISHES: how long the stored result is kept, so 
 | `use_local_cache` | `False` | An in-process replay cache that almost nobody needs. |
 | `event_handlers` | `[]` | One structured event per operation (see Observability below). |
 
-Each surface adds its own options; see its `all_options` example ([http](../examples/http/all_options.py), [queue](../examples/queue/all_options.py), [method](../examples/method/all_options.py)) and the per-surface option tables in the [README](../README.md).
+Each surface adds its own options on top of these; the full tables are under [Per-surface options](#per-surface-options) below, and there's a runnable `all_options` example for each ([http](../examples/http/all_options.py), [queue](../examples/queue/all_options.py), [method](../examples/method/all_options.py)).
 
 ```python
 from idemkit import MethodConfig, QueueConfig, idempotent, IdempotentConsumer
@@ -47,6 +47,69 @@ consumer = IdempotentConsumer(
     ),
 )
 ```
+
+## Per-surface options
+
+Each table adds to the shared options above. You rarely set past the first row or two.
+
+### HTTP options
+
+On `HttpConfig`:
+
+| Option | Default | What it's for | When to touch it |
+|---|---|---|---|
+| `scope` | none (single-tenant) | Tenant/user id so two users never collide on one key | The moment you have more than one tenant |
+| `scope_mode` | `"warn"` | No-scope behavior: `warn`, `single_tenant` (silent), `strict` (error) | `strict` in CI; `single_tenant` if you truly are one tenant |
+| `require_key_for_mutations` | `False` | Reject a POST/PATCH with no `Idempotency-Key` | To force clients to send a key |
+| `body_fingerprint` | whole body | Fingerprint only the fields that define the operation | Honest retries 422 because the body has a timestamp/nonce |
+| `response_redactor` | none | Strip PII from the stored copy before caching | Payments/PII: scrub card numbers, SSNs |
+| `response_hook` | none | Modify the response served to a duplicate (runs only on replay) | Tag a replayed response, tweak a cache header |
+| `applicable_methods` | `{POST, PATCH}` | Which HTTP methods get idempotency | You also dedupe PUT/DELETE |
+| `compat_mode` | `"default"` | `"stripe"` returns 409 instead of 422/423 | Only to match Stripe's exact status codes |
+| `key` | the header | Read the key from elsewhere (JWT claim, query, body) | Rare; the key isn't in the standard header |
+| `cacheable_status` | `{200,201,202}` | Which statuses are stored and replayed. Add a client error (e.g. `{200,201,202,422}`) to replay it Stripe-style instead of re-running the handler | You want a deterministic 4xx replayed, not re-executed |
+| `max_body_bytes` / `max_request_body_bytes` | 1 MiB each | Caps on the cached response / buffered request (memory guard) | Rare; larger payloads |
+| `header_allow` / `header_deny` | safe defaults | Which response headers are stored and replayed | Rare; custom header policy |
+
+### Queue options
+
+Everything lives on one `QueueConfig`. `dedup_id` and `visibility_timeout_seconds` are the required wiring; everything else has a default.
+
+| Option | Default | What it's for | When to touch it |
+|---|---|---|---|
+| **Required wiring** | | | |
+| `dedup_id` | **required** | How to read the broker's dedup id from a message | Always |
+| `visibility_timeout_seconds` | **required** | The broker's visibility window; the lease derives from it (kept shorter) | Always (match your broker) |
+| **Queue-specific** | | | |
+| `scope` | single | Isolation namespace (per queue / consumer group) | Several queues share one backend |
+| `max_attempts` | `5` | Retries before a message is given up on | Tune to your DLQ policy |
+| `on_exhausted` | none | Called when `max_attempts` is hit (DLQ, alert) | Set it to route poison messages |
+| `receive_count` | none | Read the broker's native delivery count | Set it (SQS `ApproximateReceiveCount`, ...) so attempts count across processes |
+| `attempt_store` | in-process | Durable attempt counter when the broker has none | Multi-consumer with no broker counter |
+| `cache_result` | `False` | Cache and replay the handler's return value | The handler returns something you want back on redelivery |
+| `result_codec` | json | How that return value is serialized | Non-JSON return types |
+| `validation_fingerprint` | none | Bytes that must match on a dedup-id hit; a reused id with a different body raises `PayloadMismatch` and is routed to `on_exhausted` | A producer might reuse a message id with a different body |
+
+A handler returning `None` records a "processed" marker, so a redelivery is skipped. The `contrib` helpers (`sqs_consumer`, `kafka_consumer`) preset `dedup_id` and `visibility_timeout_seconds` for you.
+
+### Method options
+
+On `MethodConfig`:
+
+| Option | Default | What it's for | When to touch it |
+|---|---|---|---|
+| `key_fields` | none | The argument names that make two calls "the same"; entries may be dotted paths into nested dicts/objects (`"order.id"`) | Almost always (this is your key) |
+| `scope` | single | Isolation namespace. Ambient (`lambda: ctx.get()`) keeps it out of the signature (best for agents) | Multi-tenant / per-conversation |
+| `result_codec` | `"json"` | Return value storage: `json`, `dataclass`, `pydantic`, custom `(to_dict, from_dict)`, or `pickle` (opt-in, warns) | Non-JSON return types |
+| `idempotency_key` | none | An explicit key that overrides `key_fields` | You have a stable id (order id); never a per-turn id |
+| `validation_fingerprint` | none | A field that must match on a key hit but isn't part of the key | Catch a reused id with a changed amount (raises `PayloadMismatch`) |
+| `version` | `"1"` | Bump to invalidate cached results | The function's behavior changes |
+| `normalize_args` | none | Derive the key from a function of the args | `key_fields` can't express it (nested fields) |
+| `strict_keys` | `True` | Warn when a volatile-looking field lands in the key | Leave on; disable only for a false-positive warning |
+| `require_key` | `False` | Refuse to derive the key from all arguments; the call must name its key (`key_fields`, `normalize_args`, or a per-call `idempotency_key`), else `IdempotencyKeyMissing` | Enforce, don't just warn, that every function names its key |
+| `cache_exceptions` | `()` | Exception types that are deterministic: cache and re-raise them on a duplicate instead of re-running the handler | A validation/business-rule error should replay, not re-execute |
+
+Keep one irreversible side effect per function: idemkit dedupes the call, not the steps inside it.
 
 ## Observability
 

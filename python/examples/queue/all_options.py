@@ -1,8 +1,8 @@
 """Reference: every queue option on one QueueConfig object.
 
 The consumer takes a backend (WHERE dedup state lives) and one QueueConfig (HOW a
-message is deduped). ``key`` and ``visibility_timeout_seconds`` are the required
-wiring; everything else has a default.
+message is deduped). ``dedup_id`` and ``visibility_timeout_seconds`` are the
+required wiring; everything else has a default.
 """
 
 from idemkit import IdempotentConsumer, InMemoryBackend, QueueConfig
@@ -12,6 +12,9 @@ events: list = []
 config = QueueConfig(
     # required wiring
     dedup_id=lambda msg: msg.message_id,  # how to read YOUR broker's dedup id
+    # The lease derives from this. Set it ABOVE your handler's p99 (and keep any
+    # eta/countdown/retry-backoff shorter), or the broker makes the message visible
+    # again mid-run and a second consumer picks it up → a needless duplicate.
     visibility_timeout_seconds=30,  # the broker's visibility window
     # queue-specific
     scope=lambda msg: msg.queue,  # isolation namespace (per queue / consumer group)

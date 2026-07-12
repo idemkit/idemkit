@@ -4,15 +4,30 @@ from __future__ import annotations
 
 from unittest import mock
 
+import pytest
+
 from idemkit import InMemoryBackend
 from tests.examples._examples import load_module
 
 
 def test_backends_reference() -> None:
     mod = load_module("shared/backends.py")
-    # in_memory() returns a usable backend; redis()/postgres() are shown but need a
-    # server, so they are not called here.
+    # in_memory() returns a usable backend; redis()/postgres() need a running server,
+    # so they are shown but not called here.
     assert isinstance(mod.in_memory(), InMemoryBackend)
+
+
+def test_backends_reference_builds_mongo_and_dynamo() -> None:
+    # mongo()/dynamodb() construct lazily (no connection until first use), so we can
+    # verify the example builds them when the drivers are installed.
+    pytest.importorskip("pymongo")
+    pytest.importorskip("aioboto3")
+    from idemkit.backends.dynamodb import DynamoBackend
+    from idemkit.backends.mongo import MongoBackend
+
+    mod = load_module("shared/backends.py")
+    assert isinstance(mod.mongo(), MongoBackend)
+    assert isinstance(mod.dynamodb(), DynamoBackend)
 
 
 async def test_custom_backend_dedupes() -> None:

@@ -35,7 +35,7 @@ from typing import Any
 from idemkit import problem_details
 from idemkit.adapters.asgi import _CaseInsensitiveHeaders, _unwrap_sf_string
 from idemkit.backends.base import IdempotencyBackend
-from idemkit.core.config import IdempotencyConfig, resolve_http_config
+from idemkit.core.config import resolve_http_config
 from idemkit.core.engine import IdempotencyEngine, NeutralRequest, NeutralResponse
 from idemkit.core.policy import HttpConfig
 from idemkit.core.sync_bridge import register_closable, run_sync
@@ -69,7 +69,7 @@ class WSGIIdempotencyMiddleware:
 
     Wrap your WSGI application (``app.wsgi_app`` in Flask, ``application`` in a
     Django ``wsgi.py``). Accepts the same keyword arguments as the ASGI
-    :class:`~idemkit.IdempotencyMiddleware` (see :class:`IdempotencyConfig`).
+    :class:`~idemkit.IdempotencyMiddleware`, configured with an ``HttpConfig``.
     """
 
     def __init__(
@@ -77,13 +77,13 @@ class WSGIIdempotencyMiddleware:
         app: WSGIApp,
         *,
         backend: IdempotencyBackend,
-        config: HttpConfig | IdempotencyConfig | None = None,
+        config: HttpConfig | None = None,
     ) -> None:
-        config = resolve_http_config(config)
+        resolved = resolve_http_config(config)
         self.app = app
-        self.config = config
+        self.config = resolved
         self.backend = backend
-        self.engine = IdempotencyEngine(backend=backend, config=config)
+        self.engine = IdempotencyEngine(backend=backend, config=resolved)
         # The Redis/Postgres pool binds to the sync-bridge background loop; track
         # it so it closes cleanly at process exit (no "Event loop is closed").
         register_closable(backend)

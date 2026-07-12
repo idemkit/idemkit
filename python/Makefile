@@ -4,8 +4,10 @@
 PY_SRC := idemkit tests examples
 REDIS_URL ?= redis://localhost:6379
 PG_URL    ?= postgresql://postgres:test@localhost:55432/postgres
+MONGO_URL ?= mongodb://localhost:27017
+DYNAMODB_ENDPOINT ?= http://localhost:8000
 
-.PHONY: help install format lint typecheck test test-fast test-e2e check up down clean
+.PHONY: help install format lint typecheck test test-fast test-e2e test-backends check up down clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -30,6 +32,12 @@ test-fast: ## Run the suite on in-memory only (no Docker)
 
 test: ## Run the full suite on real Redis + Postgres
 	IDEMKIT_TEST_REDIS_URL=$(REDIS_URL) IDEMKIT_TEST_PG_URL=$(PG_URL) pytest
+
+test-backends: ## Run the backend suite across ALL backends (also Mongo + DynamoDB)
+	IDEMKIT_TEST_REDIS_URL=$(REDIS_URL) IDEMKIT_TEST_PG_URL=$(PG_URL) \
+	IDEMKIT_TEST_MONGO_URL=$(MONGO_URL) IDEMKIT_TEST_DYNAMODB_ENDPOINT=$(DYNAMODB_ENDPOINT) \
+	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 \
+	pytest tests/backends tests/conformance tests/core/test_core_runner.py tests/correctness
 
 test-e2e: ## Run the dockerized broker end-to-end tests
 	IDEMKIT_TEST_REDIS_URL=$(REDIS_URL) IDEMKIT_TEST_PG_URL=$(PG_URL) pytest -m e2e

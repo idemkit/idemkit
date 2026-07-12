@@ -33,7 +33,7 @@ app.add_middleware(
     IdempotencyMiddleware,
     backend=InMemoryBackend(),  # prod: RedisBackend/PostgresBackend, see ../shared/backends.py
     config=HttpConfig(
-        scope=lambda req: req.headers["x-user-id"],
+        scope=lambda req: req.headers.get("x-user-id", "anonymous"),
         body_fingerprint=fingerprint_operation,
         response_redactor=redact_secret,
     ),

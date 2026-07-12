@@ -24,6 +24,7 @@ from idemkit.backends.memory import InMemoryBackend  # noqa: E402
 from idemkit.backends.postgres import PostgresBackend, init_pg  # noqa: E402
 from idemkit.backends.redis import RedisBackend  # noqa: E402
 from idemkit.core.state import ClaimResultType, State  # noqa: E402
+from tests._backends import EXTRA_BACKENDS, make_dynamo_backend, make_mongo_backend  # noqa: E402
 
 PG_URL = os.environ.get("IDEMKIT_TEST_PG_URL")
 REDIS_URL = os.environ.get("IDEMKIT_TEST_REDIS_URL")
@@ -40,7 +41,7 @@ async def _pg_schema():
     return
 
 
-@pytest.fixture(params=["memory", "redis", "postgres"])
+@pytest.fixture(params=["memory", "redis", "postgres", *EXTRA_BACKENDS])
 async def backend(request):
     """Yield a backend instance for every supported implementation."""
     if request.param == "memory":
@@ -62,6 +63,18 @@ async def backend(request):
         if not PG_URL:
             pytest.skip("set IDEMKIT_TEST_PG_URL to enable PostgreSQL contract tests")
         b = PostgresBackend.from_url(PG_URL, min_size=2, max_size=8)
+        try:
+            yield b
+        finally:
+            await b.aclose()
+    elif request.param == "mongo":
+        b = make_mongo_backend()
+        try:
+            yield b
+        finally:
+            await b.aclose()
+    elif request.param == "dynamodb":
+        b = make_dynamo_backend()
         try:
             yield b
         finally:

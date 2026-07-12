@@ -1,9 +1,9 @@
 """Store idempotency state in ANY datastore: the backend is a Protocol.
 
-idemkit ships InMemory, Redis, and Postgres backends, but the backend is a
-Protocol (not a base class), so you can back it with DynamoDB, etcd, MongoDB, a
-SQL table of your own, anything: implement these five methods and pass the object
-to any surface. Validate it against the shared vectors with
+idemkit ships InMemory, Redis, Postgres, MongoDB, and DynamoDB backends, but the
+backend is a Protocol (not a base class), so you can back it with etcd, a SQL
+table of your own, Cassandra, anything: implement these five methods and pass the
+object to any surface. Validate it against the shared vectors with
 `idemkit conformance`. Here we wrap InMemoryBackend and count calls to show the
 shape without a real external store.
 

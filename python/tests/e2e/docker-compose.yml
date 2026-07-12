@@ -18,6 +18,14 @@ services:
       POSTGRES_PASSWORD: test
     ports: ["55432:5432"]
 
+  mongo:
+    image: mongo:7
+    ports: ["27017:27017"]
+
+  dynamodb:
+    image: amazon/dynamodb-local
+    ports: ["8000:8000"]
+
   localstack:
     image: localstack/localstack:3
     environment:

@@ -40,7 +40,7 @@ from typing import Any
 
 from idemkit.adapters.asgi import _unwrap_sf_string
 from idemkit.backends.base import IdempotencyBackend
-from idemkit.core.config import IdempotencyConfig, resolve_http_config
+from idemkit.core.config import resolve_http_config
 from idemkit.core.engine import (
     EngineOutcome,
     IdempotencyEngine,
@@ -67,11 +67,11 @@ class Idempotency:
         self,
         *,
         backend: IdempotencyBackend,
-        config: HttpConfig | IdempotencyConfig | None = None,
+        config: HttpConfig | None = None,
     ) -> None:
-        config = resolve_http_config(config)
-        self.config = config
-        self.engine = IdempotencyEngine(backend=backend, config=config)
+        resolved = resolve_http_config(config)
+        self.config = resolved
+        self.engine = IdempotencyEngine(backend=backend, config=resolved)
 
     def protect(self, func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
         """Decorate an async endpoint so duplicate requests are deduplicated."""
