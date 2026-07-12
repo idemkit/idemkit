@@ -10,8 +10,8 @@ production swap in Postgres or Redis (state shared across workers), see ../share
 from idemkit import InMemoryBackend, MethodConfig, idempotent
 
 
-def create_invoice(customer: str, plan: str) -> dict:
-    return {"invoice_id": "inv_123", "customer": customer, "plan": plan}
+def create_invoice(customer: str, plan: str, period: str) -> dict:
+    return {"invoice_id": "inv_123", "customer": customer, "plan": plan, "period": period}
 
 
 backend = InMemoryBackend()
@@ -19,9 +19,9 @@ backend = InMemoryBackend()
 
 @idempotent(
     backend=backend,
-    config=MethodConfig(
-        key_fields=["customer", "plan", "period"], scope=lambda args: args["customer"]
-    ),
+    # Dedupe on the arguments: one invoice per (customer, plan, period). Call it
+    # twice with the same three and the body runs once; the second call replays.
+    config=MethodConfig(key_fields=["customer", "plan", "period"]),
 )
 async def charge_subscription(*, customer: str, plan: str, period: str) -> dict:
-    return create_invoice(customer, plan)
+    return create_invoice(customer, plan, period)

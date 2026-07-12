@@ -82,6 +82,9 @@ async def _assert_lease_expires_on_server_clock(backend: Any) -> None:
 
 _REDIS_URL = os.environ.get("IDEMKIT_TEST_REDIS_URL")
 _PG_URL = os.environ.get("IDEMKIT_TEST_PG_URL")
+_MONGO_URL = os.environ.get("IDEMKIT_TEST_MONGO_URL")
+# DynamoDB is intentionally absent: its leases use the client clock, not a storage
+# clock, so it is not part of this guarantee (see idemkit/backends/dynamodb.py).
 
 
 @pytest.mark.skipif(not _REDIS_URL, reason="needs IDEMKIT_TEST_REDIS_URL")
@@ -119,4 +122,22 @@ async def test_postgres_lease_expires_on_server_clock() -> None:
     assert _PG_URL is not None
     await init_pg(_PG_URL)
     async with PostgresBackend.from_url(_PG_URL) as backend:
+        await _assert_lease_expires_on_server_clock(backend)
+
+
+@pytest.mark.skipif(not _MONGO_URL, reason="needs IDEMKIT_TEST_MONGO_URL")
+async def test_mongo_lease_ignores_client_clock_skew() -> None:
+    from idemkit.backends.mongo import MongoBackend
+
+    assert _MONGO_URL is not None
+    async with MongoBackend.from_url(_MONGO_URL, database="idemkit_clockskew") as backend:
+        await _assert_lease_ignores_client_clock_skew(backend)
+
+
+@pytest.mark.skipif(not _MONGO_URL, reason="needs IDEMKIT_TEST_MONGO_URL")
+async def test_mongo_lease_expires_on_server_clock() -> None:
+    from idemkit.backends.mongo import MongoBackend
+
+    assert _MONGO_URL is not None
+    async with MongoBackend.from_url(_MONGO_URL, database="idemkit_clockskew") as backend:
         await _assert_lease_expires_on_server_clock(backend)

@@ -3,7 +3,8 @@
 A generic in-memory broker harness stands in for SQS/Kafka/RabbitMQ: it delivers
 at-least-once, redelivers anything the consumer declines, and tracks a receive
 count. The six required vectors (§7.4) run against InMemory, real Redis, and real
-PostgreSQL, mirroring the HTTP suite's cross-backend shape.
+PostgreSQL — plus MongoDB and DynamoDB when their endpoints are configured —
+mirroring the HTTP suite's cross-backend shape.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from idemkit.core.exceptions import (  # noqa: E402
     StorageError,
 )
 from idemkit.core.runner import RunStatus  # noqa: E402
+from tests._backends import EXTRA_BACKENDS, make_dynamo_backend, make_mongo_backend  # noqa: E402
 
 PG_URL = os.environ.get("IDEMKIT_TEST_PG_URL")
 REDIS_URL = os.environ.get("IDEMKIT_TEST_REDIS_URL")
@@ -47,7 +49,7 @@ async def _pg_schema():
     return
 
 
-@pytest.fixture(params=["memory", "redis", "postgres"])
+@pytest.fixture(params=["memory", "redis", "postgres", *EXTRA_BACKENDS])
 async def backend(request):
     if request.param == "memory":
         yield InMemoryBackend()
@@ -68,6 +70,18 @@ async def backend(request):
         if not PG_URL:
             pytest.skip("set IDEMKIT_TEST_PG_URL to enable PostgreSQL contract tests")
         b = PostgresBackend.from_url(PG_URL, min_size=2, max_size=8)
+        try:
+            yield b
+        finally:
+            await b.aclose()
+    elif request.param == "mongo":
+        b = make_mongo_backend()
+        try:
+            yield b
+        finally:
+            await b.aclose()
+    elif request.param == "dynamodb":
+        b = make_dynamo_backend()
         try:
             yield b
         finally:

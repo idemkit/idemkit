@@ -17,6 +17,7 @@ from tests.examples._examples import load_module
 
 
 async def test_getting_started_dedupes() -> None:
+    pytest.importorskip("fastapi")
     import httpx
 
     mod = load_module("http/getting_started.py")
@@ -123,6 +124,53 @@ def test_flask_wsgi_dedupes() -> None:
     with mock.patch.object(mod, "charge_card", wraps=mod.charge_card) as spy:
         post("key-1")
         h2 = post("key-1")
+    assert h2.get("idempotency-replayed") == "true"
+    assert spy.call_count == 1
+
+
+async def test_webhook_dedupes_on_provider_event_id() -> None:
+    pytest.importorskip("fastapi")
+    import httpx
+
+    mod = load_module("http/webhook.py")
+    transport = httpx.ASGITransport(app=mod.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        # GitHub: the id is the X-GitHub-Delivery header; same id twice -> replayed.
+        gh = {"x-github-delivery": "d-1", "content-type": "application/json"}
+        await c.post("/webhooks/github", headers=gh, content="{}")
+        g2 = await c.post("/webhooks/github", headers=gh, content="{}")
+        # Stripe: the id is event["id"] in the body; same id twice -> replayed.
+        st = {"content-type": "application/json"}
+        await c.post("/webhooks/stripe", headers=st, content='{"id": "evt_1"}')
+        s2 = await c.post("/webhooks/stripe", headers=st, content='{"id": "evt_1"}')
+    assert g2.headers.get("idempotency-replayed") == "true"
+    assert s2.headers.get("idempotency-replayed") == "true"
+
+
+def test_django_wsgi_dedupes() -> None:
+    mod = load_module("http/django_wsgi.py")
+
+    def post(key: str) -> dict:
+        environ = {
+            "REQUEST_METHOD": "POST",
+            "PATH_INFO": "/charge",
+            "QUERY_STRING": "",
+            "CONTENT_TYPE": "application/json",
+            "wsgi.input": io.BytesIO(b"{}"),
+            "HTTP_IDEMPOTENCY_KEY": key,
+            "HTTP_X_USER_ID": "u1",
+        }
+        captured: dict = {}
+
+        def start_response(status, headers, exc_info=None):
+            captured["headers"] = {k.lower(): v for k, v in headers}
+
+        b"".join(mod.application(environ, start_response))
+        return captured["headers"]
+
+    with mock.patch.object(mod, "charge_card", wraps=mod.charge_card) as spy:
+        post("dj-1")
+        h2 = post("dj-1")
     assert h2.get("idempotency-replayed") == "true"
     assert spy.call_count == 1
 

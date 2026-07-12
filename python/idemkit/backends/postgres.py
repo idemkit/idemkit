@@ -125,7 +125,7 @@ class PostgresBackend:
         This is synchronous and does not connect: the connection pool is opened
         on the first backend operation, on the serving event loop. This makes it
         safe to wire into ``app.add_middleware(...)`` at construction time and
-        fits serverless cold starts.
+        keeps startup cheap (nothing connects until the first request).
 
         ``verify_schema=True`` (default) checks, on first use, that the
         ``idemkit_records`` table exists and ``schema_version`` matches what this

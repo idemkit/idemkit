@@ -1,7 +1,7 @@
 """Backend Protocol per spec §4.1.
 
-Backend implementations included in v0.1: ``InMemoryBackend`` (dev/test only),
-``RedisBackend``, ``PostgresBackend``.
+Backend implementations included: ``InMemoryBackend`` (dev/test only),
+``RedisBackend``, ``PostgresBackend``, ``MongoBackend``, ``DynamoBackend``.
 
 All methods are async. Implementations MUST satisfy spec §4.1 atomicity:
 ``claim`` is a single-shot atomic insert; ``complete`` and ``release`` are

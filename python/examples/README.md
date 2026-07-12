@@ -20,9 +20,11 @@ dev backend for real Redis/Postgres, see [`shared/backends.py`](shared/backends.
 |---|---|
 | A shaky client double-charges; replay the first response | `http/getting_started.py` |
 | Make a WHOLE FastAPI app idempotent (scope, redact PII) | `http/fastapi_middleware.py` |
-| Make a WHOLE sync app idempotent (Flask / Django / any WSGI) | `http/flask_wsgi.py` |
+| Make a WHOLE sync Flask (or any WSGI) app idempotent | `http/flask_wsgi.py` |
+| Make a WHOLE Django site idempotent (wire it in wsgi.py) | `http/django_wsgi.py` |
 | Protect only SOME FastAPI routes, and return a dict | `http/fastapi_route.py` |
-| Protect ONE route + catch typed exceptions (e.g. a webhook) | `http/route_decorator.py` |
+| Protect ONE route + catch typed exceptions | `http/route_decorator.py` |
+| Dedupe inbound webhooks on the provider's event id (Stripe/GitHub) | `http/webhook.py` |
 | Protect a Django REST Framework view (key on request.user) | `http/drf_view.py` |
 | Make the replayed response differ from the original | `http/response_hook.py` |
 | See every HTTP option | `http/all_options.py` |
@@ -32,6 +34,7 @@ dev backend for real Redis/Postgres, see [`shared/backends.py`](shared/backends.
 | My problem | File |
 |---|---|
 | Run the side effect once per message, even on redelivery | `queue/getting_started.py` |
+| Write a runnable poll loop for any broker (RabbitMQ/NATS/...) | `queue/generic_broker.py` |
 | Consume Amazon SQS (dedup on MessageId) | `queue/sqs.py` |
 | Consume Kafka (dedup on topic:partition:offset) | `queue/kafka.py` |
 | Send a poison message to a DLQ after max_attempts | `queue/dead_letter.py` |
@@ -59,7 +62,7 @@ dev backend for real Redis/Postgres, see [`shared/backends.py`](shared/backends.
 
 | My problem | File |
 |---|---|
-| Point at real Redis or Postgres (namespace, table, TLS) | `shared/backends.py` |
+| Point at a real store — Redis, Postgres, MongoDB, or DynamoDB (namespace, table, TLS) | `shared/backends.py` |
 | Export metrics and logs (Prometheus + logging handlers) | `shared/observability.py` |
 | Store dedup state in my own datastore (the 5-method Protocol) | `shared/custom_backend.py` |
 

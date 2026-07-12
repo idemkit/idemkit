@@ -38,25 +38,28 @@ The part most libraries stay quiet about.
 ## How it is checked
 
 Five layers, from fixed examples to random adversarial search. Each runs against every
-backend.
+backend: in-memory, Redis, Postgres, MongoDB, and DynamoDB. If a behavior passes here for
+all of them, the spec is satisfied uniformly, which is the whole promise of the conformance
+vector file (`../../spec/conformance.yaml`) made concrete.
 
 **1. Conformance suite.** A fixed set of behavioral vectors: atomic claim, conditional
 complete, fencing a wrong token, lease reclaim, race-free in-flight wait, TTL expiry,
 lease renewal. Code in `tests/conformance/`, language-neutral vectors in
-`../spec/conformance.yaml`. Run: `idemkit conformance --redis ... --postgres ...`.
+`../../spec/conformance.yaml`. Run: `idemkit conformance --redis ... --postgres ...`.
 
 **2. Concurrency and crash, on real backends.** Fire N identical claims at once and
 assert exactly one wins. Simulate a crash (claim, let the lease lapse, reclaim from
 another worker, then try to complete with the stale token) and assert the stale write is
-fenced. On real Redis and Postgres, because a Lua-emulating fake does not reproduce
-server-side atomicity. Code in `tests/backends/`; set `IDEMKIT_TEST_REDIS_URL` and
-`IDEMKIT_TEST_PG_URL`, then `pytest`.
+fenced. Runs on real Redis, Postgres, MongoDB, and DynamoDB, because a fake does not
+reproduce server-side atomicity. Code in `tests/backends/`; set the backend endpoints
+(`IDEMKIT_TEST_REDIS_URL`, `IDEMKIT_TEST_PG_URL`, `IDEMKIT_TEST_MONGO_URL`,
+`IDEMKIT_TEST_DYNAMODB_ENDPOINT`), then `pytest` (or `make test`).
 
 **3. Property-based model checking.** Hypothesis generates random sequences of claim,
 complete, release, renew, and advance-clock, and drives a real backend and a reference
 model in lockstep, asserting they agree at every step and that a completed record always
 replays its exact result. On a divergence it shrinks to a minimal repro. Runs in-memory
-with a controllable clock, and on real Redis (Lua) and Postgres (SQL). Code in
+with a controllable clock, and against real Redis, Postgres, MongoDB, and DynamoDB. Code in
 `tests/correctness/test_property_stateful.py`.
 
 **4. Fault injection.** A wrapper backend raises a transient storage error before chosen
@@ -66,17 +69,22 @@ though the handler may run more than once (a lost completion is at-least-once, a
 Seeded, so a failure reproduces. Code in `tests/correctness/test_fault_injection.py`.
 
 **5. Clock skew.** Every lease decision uses the backend's own clock (Postgres `NOW()`,
-Redis `TIME`, or the injected in-memory clock), never the app server's, so two nodes with
-disagreeing clocks cannot cause a wrongful reclaim. The test skews the app clock a million
-seconds mid-claim and confirms the lease is unmoved, then lets the server clock genuinely
-pass the lease and confirms the reclaim fences the old owner. Code in
+Redis `TIME`, Mongo `$$NOW`, or the injected in-memory clock), never the app server's, so
+two nodes with disagreeing clocks cannot cause a wrongful reclaim. The test skews the app
+clock a million seconds mid-claim and confirms the lease is unmoved, then lets the server
+clock genuinely pass the lease and confirms the reclaim fences the old owner. Code in
 `tests/correctness/test_clock_skew.py`.
+
+The one exception is `DynamoBackend`: DynamoDB has no server clock in a condition
+expression, so its leases use the client clock. It passes every
+other vector but is deliberately excluded from this one; use Redis/Postgres/Mongo if you
+need the storage-clock guarantee.
 
 ## Run all of it
 
 ```bash
-docker compose -f tests/e2e/docker-compose.yml up -d   # Redis + Postgres
-make check                                              # lint, types, full suite
+docker compose -f tests/e2e/docker-compose.yml up -d   # Redis, Postgres, Mongo, DynamoDB
+make check            # lint, types, and the full suite across all five backends
 ```
 
 ## Not done yet

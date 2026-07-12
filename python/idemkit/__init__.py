@@ -5,6 +5,7 @@ The behavioral contract is documented in ``spec/README.md`` at the project root.
 
 from idemkit._version import __version__
 from idemkit.adapters.asgi import IdempotencyMiddleware
+from idemkit.backends.base import IdempotencyBackend
 from idemkit.backends.memory import InMemoryBackend, ManualClock
 from idemkit.core.events import EventHandler, IdempotencyEvent
 from idemkit.core.exceptions import (
@@ -29,9 +30,11 @@ __all__ = [
     "ConsumerAction",
     "ConsumerResult",
     "Decision",
+    "DynamoBackend",
     "EventHandler",
     "HttpConfig",
     "Idempotency",
+    "IdempotencyBackend",
     "IdempotencyConflict",
     "IdempotencyError",
     "IdempotencyEvent",
@@ -41,6 +44,7 @@ __all__ = [
     "InMemoryBackend",
     "ManualClock",
     "MethodConfig",
+    "MongoBackend",
     "PayloadMismatch",
     "PostgresBackend",
     "QueueConfig",
@@ -66,6 +70,14 @@ def __getattr__(name: str):  # type: ignore[no-untyped-def]
         from idemkit.backends.postgres import PostgresBackend
 
         return PostgresBackend
+    if name == "MongoBackend":
+        from idemkit.backends.mongo import MongoBackend
+
+        return MongoBackend
+    if name == "DynamoBackend":
+        from idemkit.backends.dynamodb import DynamoBackend
+
+        return DynamoBackend
     if name == "Idempotency":
         from idemkit.adapters.route import Idempotency
 

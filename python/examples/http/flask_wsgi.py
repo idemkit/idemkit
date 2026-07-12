@@ -20,5 +20,8 @@ wrapped = WSGIIdempotencyMiddleware(
     # InMemoryBackend is dev only; prod backend (Redis/Postgres): ../shared/backends.py
     app,
     backend=InMemoryBackend(),
-    config=HttpConfig(scope=lambda req: req.headers["x-user-id"]),
+    # Read scope from the request, with a safe fallback: bracket access would
+    # KeyError on a request that omits the header. Use scope_mode="strict" if a
+    # missing tenant id should be a hard error instead.
+    config=HttpConfig(scope=lambda req: req.headers.get("x-user-id", "anonymous")),
 )
