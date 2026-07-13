@@ -1,21 +1,21 @@
 # idemkit: Idempotent Execution for Python
 
-**Idempotency done right for HTTP, queue consumers, and AI tool calls. One correct core underneath all three, each with conformance vectors passing on real Redis and PostgreSQL.**
+**Idempotent execution for HTTP, queue consumers, and AI tool calls: one correct core underneath all three, with conformance vectors that run against real Redis, PostgreSQL, MongoDB, and DynamoDB.**
 
-> Positioning note: all three surfaces now have reference implementations (HTTP, queue consumers, and AI tool calls), each passing its conformance vectors against real Redis and PostgreSQL. The unified three-surface primitive is the architecture and the contribution thesis of this document. The HTTP surface has the most production mileage; the queue and AI surfaces are newer. Public messaging should stay honest about that maturity gradient rather than implying the queue and AI surfaces have the same battle-testing as HTTP.
+> All three surfaces have reference implementations (HTTP, queue consumers, AI tool calls), each passing its conformance vectors against the real backends. The unified three-surface primitive is the architecture and the central contribution of this document. The HTTP surface has the most production mileage; the queue and AI surfaces are newer and less battle-tested.
 
-**Version:** 2.0-draft (unified)
+**Version:** draft (tracks the current pre-1.0 implementation)
 **Date:** 2026-05-31
-**Author:** Violetta Pidvolotska, *<add your LinkedIn / personal site / talks URL here>*
-**Status:** all three surfaces implemented and tested against real Redis + PostgreSQL: HTTP (Appendix A), queue consumers (§7, with the §7.4 vectors), and AI tool calls (§8, with the §8.4 vectors), on a shared surface-neutral core with lease renewal (§5.3.1). The shared backend-Protocol vectors ship as a runnable conformance suite (§11.1). HTTP remains the most production-hardened surface.
+**Author:** Violetta Pidvolotska
+**Status:** all three surfaces implemented and tested against the real backends (Redis, PostgreSQL, MongoDB, DynamoDB): HTTP (Appendix A), queue consumers (§7, with the §7.4 vectors), and AI tool calls (§8, with the §8.4 vectors), on a shared surface-neutral core with lease renewal (§5.3.1). The shared backend-Protocol vectors ship as a runnable conformance suite (§9, §13). HTTP remains the most production-hardened surface.
 **License:** CC BY 4.0
-**Scope of this document:** this is the single, authoritative idemkit specification, the one we implement against. It defines the shared core and the three surfaces (HTTP, queues, AI tool calls); the full, implemented HTTP behavioral contract is **Appendix A**. The user-facing READMEs (repo root and `python/`) are the adoption docs (what it covers, why, and how) and are intentionally kept separate from this spec. The language-neutral test vectors live in `conformance.yaml` (this directory).
+**Scope of this document:** the reference idemkit specification, the one the implementation is built against. It defines the shared core and the three surfaces (HTTP, queues, AI tool calls); the full, implemented HTTP behavioral contract is **Appendix A**. The user-facing READMEs (repo root and `python/`) are the adoption docs and are kept separate from this spec. The language-neutral test vectors live in `conformance.yaml` (this directory).
 
 ---
 
 ## 1. Thesis
 
-HTTP idempotency, duplicate-safe queue processing, and safe retries of AI/LLM tool calls look like three different problems. They are the same problem wearing three coats.
+HTTP idempotency, duplicate-safe queue processing, and safe retries of AI/LLM tool calls look like three different problems. They are the same problem in three settings.
 
 In every case the shape is identical:
 
@@ -41,9 +41,9 @@ The naïve fix ("check if we've seen this key, if not do the work, then record t
 - The stored result is keyed only on the client-chosen key, so two tenants using the same key see each other's data. (No scoping.)
 - A transient 5xx gets cached and replayed forever, so retries can never succeed. (No status policy.)
 
-These are not exotic. They are the bugs in the most-installed libraries today. The most-installed Python HTTP option, `asgi-idempotency-header`, has had a crash-recovery bug ([snok/asgi-idempotency-header#16](https://github.com/snok/asgi-idempotency-header/issues/16)) open since July 2024. On the queue side there is no dominant Python idempotent-consumer library at all: teams hand-roll dedup on top of broker features and get the lease/visibility-timeout interaction wrong. On the AI side, the only "safe retry" answer today is a full durable-execution framework, which is a large dependency and an architectural commitment.
+These are not exotic; they are the failure modes that recur across ad-hoc and library implementations alike. HTTP idempotency middleware commonly caches the response but skips crash recovery, so a handler that dies mid-run can leave a key stuck. On the queue side there is no common idempotent-consumer primitive: teams hand-roll dedup on top of broker features and get the lease/visibility-timeout interaction wrong. On the AI side, the usual "safe retry" answer is a full durable-execution framework, which is a large dependency and an architectural commitment.
 
-idemkit's claim is narrow and testable: **ship the correct core once, and close, per surface, the specific failure modes listed above, with a conformance suite that proves the behavior rather than asserting it.**
+idemkit's claim is narrow and testable: **ship the correct core once, and close, per surface, the specific failure modes listed above, with a conformance suite that exercises the behavior rather than only asserting it.**
 
 ---
 
@@ -67,10 +67,10 @@ The key words **MUST**, **SHOULD**, **MAY**, etc. are interpreted per RFC 2119 a
 
 These hold on every surface. They are what a developer, a platform team, and an operator can rely on.
 
-1. **Correctness before everything.** The core guarantee is a *rigorously-tested atomic claim with crash recovery*. Wrong idempotency is worse than none (it silently loses or duplicates operations), so the claim is a single atomic step, the record is a state machine (not a cache flag), and a crashed or fenced-out executor can never corrupt a later attempt. ("Rigorously tested" is deliberate: today this means an extensive example-based and cross-backend suite against real Redis and PostgreSQL. Property-based testing and fault injection are on the roadmap, §13; we do not claim formal proof.) If only one thing in this library is bulletproof, it is this.
+1. **Correctness before everything.** The core guarantee is a *rigorously-tested atomic claim with crash recovery*. Wrong idempotency is worse than none (it silently loses or duplicates operations), so the claim is a single atomic step, the record is a state machine (not a cache flag), and a crashed or fenced-out executor can never corrupt a later attempt. ("Rigorously tested" is deliberate: an extensive example-based and cross-backend suite against real Redis, PostgreSQL, MongoDB, and DynamoDB, plus property-based (Hypothesis) model checking and fault injection. We do not claim formal proof.) If only one thing in this library is bulletproof, it is this.
 2. **Safe by default, without blocking the first run.** Scope is `caller + operation` (plus the request body on HTTP), never a silent global namespace. With no identity configured the library runs in **single-tenant mode** and emits a loud, repeated warning that this collapses all callers into one namespace; you set `scope` for multi-tenant isolation, and `scope_mode="strict"` turns the missing-identity case into a hard error for CI/production gates. This is a deliberate balance: value on the first run, with safety as a loud net plus an opt-in enforcement switch, rather than a hard-fail that costs adopters at the moment of peak enthusiasm. (A configured extractor that then yields nothing at request time still fails closed, see §5.1, because that is a runtime ambiguity, not a declared single-tenant choice.)
-3. **Zero-config in development.** `InMemoryBackend` works out of the box. One decorator or one middleware, no infrastructure. The five-minute "aha" is honest for **HTTP** specifically; queues (you must wire the broker's dedup id and visibility timeout) and AI tools (you must reason about argument normalization) take more thought, and the docs say so rather than implying one-line magic everywhere. You add Redis or PostgreSQL only when you go multi-process.
-4. **Pluggable backends, minimal footprint.** Memory → Redis → PostgreSQL today, anything else via a five-method `Protocol` (`claim`, `complete`, `release`, `renew`, `wait_for_completion`; `renew` was added in v0.2 for the lease heartbeat, §5.3.1). The core has **zero third-party dependencies**; each backend is one opt-in extra (`idemkit[redis]`, `idemkit[postgres]`, `idemkit[asgi]`). The buy/no-buy facts a platform team checks first, install footprint and the Python/Starlette/Pydantic/Redis/PostgreSQL compatibility matrix, live in the README and `pyproject.toml`, not buried in this spec.
+3. **Zero-config in development.** `InMemoryBackend` works out of the box. One decorator or one middleware, no infrastructure. The quick, no-infrastructure start is honest for **HTTP** specifically; queues (you must wire the broker's dedup id and visibility timeout) and AI tools (you must reason about argument normalization) take more thought, and the docs say so rather than implying one-line magic everywhere. You add Redis or PostgreSQL only when you go multi-process.
+4. **Pluggable backends, minimal footprint.** In-memory, Redis, PostgreSQL, MongoDB, and DynamoDB today, anything else via a five-method `Protocol` (`claim`, `complete`, `release`, `renew`, `wait_for_completion`; `renew` drives the lease heartbeat, §5.3.1). The core has **zero third-party dependencies**; each backend is one opt-in extra (`idemkit[redis]`, `idemkit[postgres]`, `idemkit[asgi]`). The buy/no-buy facts a platform team checks first, install footprint and the Python/Starlette/Pydantic/Redis/PostgreSQL compatibility matrix, live in the README and `pyproject.toml`, not buried in this spec.
 5. **Explicit failure policy.** `fail_open` vs `fail_closed` on storage outage, and exactly which outcomes are cacheable, are configuration you set deliberately, never a surprise the library decides for you.
 6. **Observable.** One structured event per operation, tagged with the decision (`new`/`replayed`/`in_flight_wait`/`conflict`/…) and the surface, with fields you route to Prometheus, OpenTelemetry, or logs, so one dashboard covers HTTP, queues, and tools. (A native OpenTelemetry span emitter is specified in Appendix A §4.15.1 but not yet implemented; today you bridge the event into your own tracer.)
 7. **Testable.** First-class helpers to exercise a duplicate and to force a record into a given state, so your own test suite can prove your handler is idempotent. See §6.2 and §9.4.
@@ -99,14 +99,14 @@ These hold on every surface. They are what a developer, a platform team, and an 
                         └───────────────┬─────────────────────────────┘
                                         │  backend Protocol (5 methods)
                         ┌───────────────▼─────────────────────────────┐
-   Backends             │   InMemory (dev)   Redis (Lua+PubSub)   PG   │
-   (distributed-correct)│                                     (LISTEN) │
+   Backends             │  InMemory · Redis · PG · Mongo · DynamoDB    │
+   (distributed-correct)│  claim + storage-clock lease + fencing token │
                         └─────────────────────────────────────────────┘
 ```
 
 The boundary that makes this real: **the backends are already surface-neutral.** A stored record holds an opaque result blob (bytes); the claim/lease/fencing logic knows nothing about HTTP. The only HTTP-specific code lives in the HTTP adapter (status codes, header allow/deny, Problem Details, wire format). Queue and AI adapters reuse the same backends and the same core with a different *result codec* and a different *policy*.
 
-This is verifiable today: the same `InMemoryBackend`, `RedisBackend`, and `PostgresBackend` that drive the HTTP middleware also drive a 40-line proof-of-concept that deduplicates queue redeliveries and LLM tool calls, including under concurrency and after a simulated crash.
+This is verifiable today: the same `InMemoryBackend`, `RedisBackend`, `PostgresBackend`, `MongoBackend`, and `DynamoBackend` that drive the HTTP middleware also drive the queue-consumer and AI-tool adapters, including under concurrency and after a simulated crash.
 
 ---
 
@@ -128,7 +128,7 @@ Composition MUST be **length-prefixed** (`SHA-256(len_be32(c0)‖c0‖…)`) so 
 
 **Identity guardrails.** Because scoping rides on a user-supplied callable, the core SHOULD reject or loudly warn on obviously-unsafe identities: an empty/`None` identity in production (already fail-closed on HTTP), and a *constant* identity (e.g. a literal that collapses all callers into one bucket) SHOULD be detectable in a strict/lint mode at construction time. Silent misconfiguration here reintroduces the exact cross-tenant bug the library exists to prevent.
 
-**Key selector + validation selector (allow-list, borrowed from AWS Powertools).** For surfaces with a structured payload (queue messages, AI tool arguments), the recommended way to define what "same operation" means is two explicit selectors, not "hash everything and subtract":
+**Key selector + validation selector (allow-list).** For surfaces with a structured payload (queue messages, AI tool arguments), the recommended way to define what "same operation" means is two explicit selectors, not "hash everything and subtract":
 
 - a **key selector**: which fields form the idempotency key (e.g. `["user_id", "product_id"]`);
 - a separate **validation selector**: which fields must *match* on a key hit but are not part of the key (e.g. `amount`).
@@ -163,7 +163,7 @@ The lease MUST be enforced by the **storage backend's authoritative clock**, nev
 
 Completion is conditional: a `CLAIMED → COMPLETED` transition applies **only if `claim_token` still matches**. If a slow executor's lease expired and another executor reclaimed the key, the slow executor's delayed completion is rejected (the *fencing* guarantee). This is what makes a crash mid-operation safe: the dead executor's record auto-expires, the next attempt reclaims, and a zombie's late write cannot corrupt the new attempt.
 
-#### 5.3.1 Lease renewal is not optional (it is a v0.2 blocker for queue and AI)
+#### 5.3.1 Lease renewal is not optional (it is what makes crash-safety work for queue and AI)
 
 A fixed lease is a trap for any operation that can run longer than a tight TTL, and that is the common case on the queue and AI surfaces. The dilemma:
 
@@ -172,20 +172,20 @@ A fixed lease is a trap for any operation that can run longer than a tight TTL, 
 
 "Size the lease above p99" is not a fix: p99 is not a maximum, and the tail is exactly where this bites. The correct answer is **lease renewal (heartbeat)**: while a handler runs, the executor periodically extends `lease_until` (conditional on still holding `claim_token`), so the lease tracks actual progress instead of a guessed upper bound. A crash stops the heartbeat and the lease lapses promptly; a slow-but-alive handler keeps its claim.
 
-**Prior art and why off-Lambda differs.** AWS Powertools derives its in-progress expiry from the Lambda's *remaining execution time* (`now + remaining_time_in_millis`), an elegant move that works because Lambda enforces a hard timeout, so the remaining time *is* a true maximum and no renewal is ever needed. idemkit borrows the idea (a queue lease SHOULD be derived from the broker's visibility timeout, an AI lease from any deadline available), but off-Lambda there is usually **no hard deadline**, so a single derived value is only an estimate and renewal is required to be correct. This is precisely why renewal is a first-class part of idemkit and is absent from Powertools: it is the cost of running anywhere, not only on a platform that kills you at a known time.
+**Why a platform-deadline shortcut is not enough off-platform.** A serverless model can derive its in-progress expiry from the platform's *remaining execution time*, which works because the platform enforces a hard timeout, so the remaining time *is* a true maximum and no renewal is ever needed. idemkit uses the same idea where a deadline exists (a queue lease SHOULD be derived from the broker's visibility timeout, an AI lease from any deadline available), but off such a platform there is usually **no hard deadline**, so a single derived value is only an estimate and renewal is required to be correct. Renewal is the cost of running anywhere, not only where the runtime kills you at a known time.
 
-**Fencing differentiator (verified).** Powertools completes unconditionally: its `_update_record` writes the result without re-checking ownership, relying on Lambda having killed any timed-out executor. idemkit instead fences completion with the `claim_token`, so even a *stalled-but-alive* worker (the normal case off-Lambda) cannot overwrite a newer execution's result after its lease was reclaimed. Same reason: portability past the Lambda assumption.
+**Completion fencing.** A hard-deadline model can complete the record unconditionally, relying on the runtime having killed any timed-out executor. idemkit instead fences completion with the `claim_token`, so even a *stalled-but-alive* worker (the normal case without a hard deadline) cannot overwrite a newer execution's result after its lease was reclaimed.
 
 **Renewal introduces a partition hazard, and the mitigation is bounded by Python's cancellation model.** Heartbeating creates a new failure mode: the handler is alive but the link to storage blips, `renew()` fails, the lease lapses, and a second executor reclaims, and now two live executors run the same operation. Fencing protects the *record* (only one completion wins) but not the *side effect* (both may have already fired it). The mitigation is **cooperative cancellation**: when `renew()` fails and the lease can't be confirmed extended, the executor signals cancellation into its own handler before `lease_until` instead of pressing on.
 
-Stated honestly (this is an overclaim if left as an absolute): asyncio cancellation only takes effect at an `await` point. A handler that `await`s regularly will observe the `CancelledError` and can stop and clean up before the lease expires. For those, cancellation closes the partition window. A handler that is blocked in a synchronous call (a sync DB driver, `requests`, a CPU-bound loop) will **not** see the cancellation until it next reaches an `await`, which may be after the lease has already lapsed. For those, renewal degrades back to the partition hazard, exactly like §5.7's broader cancellation limit. So: implementations MUST issue the cancellation and MUST size the renewal interval with margin below the lease to detect a failed renew early; but they MUST also document that the guarantee holds only for cooperatively-scheduled handlers, and that blocking/CPU-bound handlers on a money path still need downstream idempotency (§5.7). Renewal turns a crash hazard into a partition hazard that is *closed for well-behaved handlers and merely mitigated for blocking ones*, not eliminated for all.
+To be precise (this would be an overclaim as an absolute): asyncio cancellation only takes effect at an `await` point. A handler that `await`s regularly will observe the `CancelledError` and can stop and clean up before the lease expires. For those, cancellation closes the partition window. A handler that is blocked in a synchronous call (a sync DB driver, `requests`, a CPU-bound loop) will **not** see the cancellation until it next reaches an `await`, which may be after the lease has already lapsed. For those, renewal degrades back to the partition hazard, exactly like §5.7's broader cancellation limit. So: implementations MUST issue the cancellation and MUST size the renewal interval with margin below the lease to detect a failed renew early; but they MUST also document that the guarantee holds only for cooperatively-scheduled handlers, and that blocking/CPU-bound handlers on a money path still need downstream idempotency (§5.7). Renewal turns a crash hazard into a partition hazard that is *closed for well-behaved handlers and merely mitigated for blocking ones*, not eliminated for all.
 
-Therefore renewal is **normative for long-running operations** and a v0.2 deliverable, not a "later" nicety:
+Therefore renewal is **normative for long-running operations**, not a "later" nicety:
 
-- The backend Protocol MUST gain a `renew(effective_key, claim_token, lease_ttl) -> bool` operation (conditional on the token, like `complete`/`release`).
-- The queue and AI adapters MUST heartbeat for the duration of the handler, at an interval well under the lease.
-- On the queue surface this also relaxes the §7.2 constraint: the lease can be short (so crash recovery is fast) *and* a slow handler is safe, with the lease kept under the broker's visibility timeout by renewal rather than by a single large value.
-- Until renewal ships, the HTTP surface (short handlers) is unaffected, and the queue/AI surfaces MUST document the fixed-lease trade-off above as a known limitation.
+- The backend Protocol includes a `renew(effective_key, claim_token, lease_ttl) -> bool` operation (conditional on the token, like `complete`/`release`).
+- The queue and AI adapters heartbeat for the duration of the handler, at an interval well under the lease.
+- On the queue surface this relaxes the §7.2 constraint: the lease can be short (so crash recovery is fast) *and* a slow handler is safe, with the lease kept under the broker's visibility timeout by renewal rather than by a single large value.
+- The HTTP surface (short handlers) does not heartbeat; an HTTP handler that outlives its lease can be reclaimed, so size the HTTP lease above its p99 or push the key downstream (§5.7).
 
 ### 5.4 Result codec (the per-surface seam)
 
@@ -193,7 +193,7 @@ The stored result is opaque to the core. Each surface supplies a `ResultCodec`:
 
 - **HTTP:** status + permitted headers + body bytes (full-fidelity replay).
 - **Queue (side-effect-only):** a tiny "processed" marker; there is no payload to replay, so a `COMPLETED` record means *skip*, not *return garbage*.
-- **Queue (result-bearing) / AI tool:** a serialized return value. Following AWS Powertools' serializer model, the result is always stored as JSON in the backend, and a pluggable **output serializer** maps the typed return value to/from that JSON: a default JSON codec, plus **dataclass** and **pydantic** serializers that infer the type from the function's return annotation, plus a custom `(to_dict, from_dict)` codec. `pickle` is **opt-in only** and MUST emit a security warning (it is an RCE vector); an unserializable result MUST fail closed (do not silently re-run an operation that has side effects). This is the "honest serialization storyline", typed in, typed out, JSON on the wire, no surprises.
+- **Queue (result-bearing) / AI tool:** a serialized return value. The result is always stored as JSON in the backend, and a pluggable **output serializer** maps the typed return value to/from that JSON: a default JSON codec, plus **dataclass** and **pydantic** serializers that infer the type from the function's return annotation, plus a custom `(to_dict, from_dict)` codec. `pickle` is **opt-in only** and MUST emit a security warning (it is an RCE vector); an unserializable result MUST fail closed (do not silently re-run an operation that has side effects). Typed in, typed out, JSON on the wire, no surprises.
 
 ### 5.5 In-flight handling (race-free wait)
 
@@ -222,13 +222,13 @@ Not every outcome should be cached. The core MUST let each surface declare which
 
 Each operation emits a structured event for its terminal decision (`new`, `replayed`, `in_flight_wait`, `conflict`, `payload_mismatch`, `lease_reclaimed`, `lease_reclaimed_loss`, `storage_error`, `corrupt_record`), carrying the hashed effective key (never the raw key), latency, backend, and `fingerprint_version`. The surface name (`http` / `queue` / `ai_tool`) is included so one dashboard covers all three.
 
-A `response_hook` (borrowed from Powertools) MAY post-process a replayed result before it is returned, e.g. to stamp a "this was a replay" marker, without the caller re-deriving that from the decision.
+A `response_hook` MAY post-process a replayed result before it is returned, e.g. to stamp a "this was a replay" marker, without the caller re-deriving that from the decision.
 
-### 5.9 Local cache (warm-path optimization, borrowed from Powertools)
+### 5.9 Local cache (warm-path optimization)
 
 An optional in-process LRU cache (`use_local_cache`, `local_cache_max_items`) lets a repeat of a key seen in the same process skip the backend round-trip. Two rules are normative:
 
-- **Only `COMPLETED` records are cacheable locally; an `INPROGRESS` claim MUST NOT be cached** (its state is volatile and owned elsewhere). Powertools follows the same rule.
+- **Only `COMPLETED` records are cacheable locally; an `INPROGRESS` claim MUST NOT be cached** (its state is volatile and owned elsewhere).
 - The local cache is a latency optimization, never the source of truth: it is bounded, TTL-checked on read, and invalidated on release. Correctness still comes from the backend; the cache only short-circuits a known-`COMPLETED` replay. In a multi-process deployment a local cache cannot see another process's completion, so it only ever *adds* a backend read it could skip, it never causes a miss to become a wrong hit.
 
 ---
@@ -243,7 +243,7 @@ The HTTP surface is fully specified in Appendix A §4-§9 and implemented. Summa
 
 **Fingerprint cost (hot path).** Hashing the request body on every call has a CPU cost that grows with body size and shows up at p99 for large payloads. idemkit bounds it: the body fingerprint is capped by `max_request_body_bytes` (default 1 MiB), a larger request bypasses idempotency rather than being hashed unbounded (§7-style streamed counting, never trusting `Content-Length`), and a `body_fingerprint` callback returning `b""` keys on method + path + key + caller when the body is large or volatile. So the fingerprint is never an unbounded hot-path hash; it is either small, capped, or skipped by configuration.
 
-**Tests:** 179 tests, run against InMemory, real Redis, and real PostgreSQL, including the cross-backend contract suite, concurrency (N-at-once → exactly one execution), crash/lease-reclaim, payload mismatch, header filtering, size/streaming bypass, redactor-failure-does-not-persist, and the per-route decorator.
+**Tests:** the HTTP surface suite runs against InMemory, real Redis, PostgreSQL, MongoDB, and DynamoDB, including the cross-backend contract suite, concurrency (N-at-once → exactly one execution), crash/lease-reclaim, payload mismatch, header filtering, size/streaming bypass, redactor-failure-does-not-persist, and the per-route decorator.
 
 ### 6.1 Usage contract
 
@@ -296,7 +296,7 @@ async def test_charge_is_idempotent():
     assert charges_in_db() == 1            # the side effect happened once
 ```
 
-This is the test idemkit's own suite runs against all three backends; the same shape proves *your* handler.
+This is the test idemkit's own suite runs against all five backends; the same shape checks *your* handler.
 
 ### 6.3 Client retry contract (what the caller does with each outcome)
 
@@ -388,7 +388,7 @@ An LLM agent re-emits the same tool call for ordinary reasons: a retry after a t
 4. **Side-effect classification is the caller's, explicitly.** A pure tool needs no idempotency and wrapping it only wastes storage; a side-effectful tool needs it. The decorator MUST NOT guess. It applies to whatever the developer decorates, and the docs make the distinction loud.
 5. **Concurrent-call dedup with in-flight wait.** When the same tool call is in flight and a duplicate arrives (parallel agents, fast retry), only one executes; the duplicate waits and replays via the subscribe-before-read pattern (§5.5). This is the agent-world analogue of HTTP concurrent retries.
 6. **Non-determinism, stated plainly.** Idempotency caches the *first* result for a given key; it does not make a nondeterministic tool deterministic, and a different key (different arguments) is a different call. This is documented so users do not mistake idempotency for memoization-of-meaning.
-7. **Long-running tools.** Tool calls (especially ones that themselves call slow APIs or models) routinely outlast a tight lease, so this surface depends on **lease renewal/heartbeat** (§5.3.1), not on guessing a lease above p99. Renewal is the v0.2 mechanism that keeps a live-but-slow tool's claim while still letting a crashed one's lease lapse promptly. Until it ships, the fixed-lease trade-off in §5.3.1 is a documented limitation of this surface.
+7. **Long-running tools.** Tool calls (especially ones that themselves call slow APIs or models) routinely outlast a tight lease, so this surface depends on **lease renewal/heartbeat** (§5.3.1), not on guessing a lease above p99. Renewal keeps a live-but-slow tool's claim while still letting a crashed one's lease lapse promptly.
 
 ### 8.3 API shape (illustrative, not final)
 
@@ -434,8 +434,8 @@ A side-effectful tool wrapped this way executes once per `(tool, version, select
 
 The originality and the credibility both rest here. idemkit ships a **language-neutral conformance vector file** and runs the shared core vectors plus each surface's vectors against every production backend.
 
-- **Shared core vectors** (already implemented for the backend Protocol): atomic claim, duplicate → already-claimed, conditional complete, fencing on wrong token, lease reclaim, crash-then-reclaim, concurrent-claim-exactly-one, in-flight wait, wait timeout, completed-TTL expiry, corrupt-record recovery. These run uniformly across InMemory, Redis, and PostgreSQL.
-- **Per-surface suites**: HTTP (implemented, 179 tests), queue (§7.4), AI tool (§8.4).
+- **Shared core vectors** (already implemented for the backend Protocol): atomic claim, duplicate → already-claimed, conditional complete, fencing on wrong token, lease reclaim, crash-then-reclaim, concurrent-claim-exactly-one, in-flight wait, wait timeout, completed-TTL expiry, corrupt-record recovery. These run uniformly across InMemory, Redis, PostgreSQL, MongoDB, and DynamoDB (DynamoDB excepts only the clock-skew vector, as its leases use the client clock).
+- **Per-surface suites**: HTTP (implemented), queue (§7.4), AI tool (§8.4).
 - **The promise:** a behavior that passes the shared vectors on all backends, plus a surface's vectors, is correct on that surface, uniformly, and demonstrably. The same `claim/lease/fence` correctness is proven once and reused, rather than re-implemented (and re-broken) per surface. A cross-language conformance runner is future work (see Appendix A §8).
 
 ### 9.4 Test affordances for users (testability as a feature)
@@ -450,67 +450,31 @@ These are first-class, documented helpers. Most idempotency tools are black boxe
 
 ---
 
-## 10. What existing solutions get wrong (honest comparison)
+## 10. Related approaches and what they leave open
 
-This is a category comparison, not a per-issue audit. Specific upstream issue references should be verified against the live tracker; the one independently re-verified for this revision is `snok/asgi-idempotency-header` [#16](https://github.com/snok/asgi-idempotency-header/issues/16) (crash recovery, open since 2024-07-11).
+A category comparison, framed by capability rather than by naming products.
 
-| Concern | Typical HTTP libs | Ad-hoc queue dedup | AWS Lambda Powertools | Durable-execution (Temporal/DBOS/Restate) | **idemkit** |
-|---|---|---|---|---|---|
-| Atomic claim under concurrency | partial / missing | often missing | yes (DynamoDB conditional) | yes | **yes** |
-| Crash recovery via lease + fencing | often missing | usually missing | yes | yes | **yes** |
-| Lease ↔ visibility-timeout coupling | n/a | the #1 missed bug | n/a (Lambda model) | engine-handled | **yes (enforced)** |
-| Side-effect-only "skip" mode | n/a | ad-hoc | partial | n/a | **yes** |
-| Tool-arg fingerprint + normalization | n/a | n/a | n/a | via workflow code | **yes (explicit key + declared normalizer)** |
-| Result serialization safety | n/a | n/a | JSON | engine-managed | **fail-closed, pickle opt-in** |
-| Cross-tenant scoping by default | often missing | rarely | manual | yes | **required in prod** |
-| Runs anywhere (not tied to a platform) | yes (ASGI) | yes | partial, runs off-Lambda, but **synchronous-only** and completion isn't fenced without Lambda's kill | separate runtime | **yes** |
-| Lightweight drop-in (no runtime) | yes | yes | yes (**sync functions only**) | **no** | **yes (async-native + sync)** |
-| One model across HTTP + queue + tools | no | no | function/event only, **no HTTP middleware, no tool surface** | partial (heavy) | **yes** |
-| Conformance suite across backends | no | no | internal | internal | **yes (public)** |
+- **HTTP idempotency middleware / response caches.** Cache a response under the idempotency key and replay it. The common gap is crash recovery: many cache the result but do not fence a handler that dies mid-run, so a key can stick, or a stalled-but-alive worker can double-run. Concurrency is often handled as a hard `409` rather than a wait-and-replay.
+- **Ad-hoc queue dedup.** Teams hand-roll a "seen this message id?" check on top of broker features. The recurring bug is the lease ↔ visibility-timeout coupling: if the handler outlives the broker's visibility window the message is redelivered and runs twice, and attempt counts are lost across releases.
+- **Lock-based task dedupers.** A distributed lock keyed on task name + arguments blocks concurrent duplicates, but the lock is typically held until the task finishes, so a crash or hard-kill can strand the key, and there is usually no request-fingerprint check.
+- **Durable-execution engines.** Correct and powerful, but they solve a larger problem (multi-step orchestration, deterministic replay) and require restructuring your code around a separate runtime — overkill when you only need one operation to be safe to retry.
 
-**Why not AWS Lambda Powertools?** It is the strongest existing comparison and the right first question, so it gets a straight answer. Powertools' idempotency utility is genuinely good: AWS-backed, real adoption, a correct conditional-write claim, and, a common misconception to correct, its `@idempotent_function` runs on *any* synchronous Python function off-Lambda, with DynamoDB, Redis OSS, Valkey, or a custom store. So "it only runs on Lambda" is wrong. idemkit differs on four axes, not on "it's wrong": (1) **async**, Powertools' idempotency is synchronous-only, so the whole FastAPI / async-agent / async-worker world can't use it ergonomically; (2) **fencing off-Lambda**, Powertools completes the record *unconditionally* and leans on Lambda's remaining-time timeout to kill a stalled worker; with no hard deadline (the normal case off-Lambda) a stalled-but-alive worker can double-run, which idemkit's `claim_token` fencing + lease renewal prevent; (3) **surfaces**, Powertools has no HTTP middleware and no AI-tool-call surface; (4) a **public, language-neutral conformance suite** rather than internal tests. If you're on Lambda and synchronous, Powertools is a fine choice. idemkit is for everyone who is async, off-Lambda, or needs the HTTP/tool surfaces.
-
-The honest summary: HTTP libraries are narrow and several are unmaintained or partially correct; queue dedup is usually hand-rolled and misses the lease/visibility interaction; Powertools is excellent but synchronous-only, completes without fencing off-Lambda, and has no HTTP or tool surface; durable-execution frameworks are correct but heavy and require restructuring. idemkit's position is the correct, lightweight, portable middle, made coherent by a single core and proven by a single public conformance suite.
-
-### 10.1 idemkit vs Powertools, in detail (what we borrowed, what we add)
-
-Powertools' idempotency utility is the most mature design in this space and the right thing to learn from. Studying its source, idemkit deliberately **adopts** several of its best ideas, credited, not reinvented:
-
-- **Allow-list key + validation selectors** (`event_key_jmespath` + `payload_validation_jmespath`) → idemkit's key/validation selectors (§5.1), which is a cleaner answer to volatile fields than a deny-list normalizer.
-- **Typed output serializers** (JSON / dataclass / pydantic / custom, JSON on the wire) → idemkit's `ResultCodec` (§5.4).
-- **Local LRU cache** for warm-path replays, `COMPLETED`-only → §5.9.
-- **In-progress expiry derived from the platform deadline** → idemkit derives the queue lease from the broker's visibility timeout (§5.3.1).
-- **`raise_on_no_idempotency_key`** → idemkit's `require_key` semantics; **`response_hook`** → §5.8.
-- Confirmation that its **conditional-write claim** (`attribute_not_exists OR expiry < now OR (INPROGRESS AND in_progress_expiry < now)`) matches idemkit's claim semantics: independent validation that the core design is right.
-
-Where idemkit **adds**, against a true peer rather than a strawman:
-
-| Axis | AWS Powertools | **idemkit** |
-|---|---|---|
-| Runtime | any **synchronous** function incl. off-Lambda; DynamoDB / Redis / Valkey / custom (no async) | any Python, **async-native + sync**; Redis / PostgreSQL / pluggable |
-| Completion fencing | **unconditional update** (relies on Lambda killing a timed-out fn) | **`claim_token`-fenced** completion (safe for stalled-but-alive workers off-Lambda) |
-| Long ops past the lease | in-progress expiry = Lambda remaining time; **no renewal** (Lambda has a hard deadline) | **lease renewal / heartbeat** (§5.3.1) for environments with no hard deadline |
-| Hash | MD5 default | SHA-256, length-prefixed (collision-resistant on adversarial input) |
-| Persistence-error policy | fail-closed (raises) | configurable **fail-open / fail-closed** (§5.7) |
-| AI tool-call surface | not addressed | explicit-key + selector model (§8) |
-| Conformance | internal tests | **public, language-neutral suite** across backends (§9) |
-
-The honest framing: for a synchronous function on Lambda, Powertools is a fine, arguably better-integrated choice, and idemkit does not claim to beat it there. idemkit is the answer for the much larger set of Python services and agents that are async, run off-Lambda, or need the HTTP/tool surfaces, and its fencing + renewal close two correctness gaps that the Lambda model lets Powertools skip.
+idemkit's position is the correct, lightweight, portable middle: one atomic claim with a storage-clock lease and fencing token, a race-free in-flight wait, request fingerprinting, and lease renewal for handlers with no hard deadline — the same core across HTTP, queues, and AI tool calls, checked by a single public conformance suite. Prior designs it draws on are credited in §14.
 
 ---
 
-## 11. Original contribution (statement for expert review)
+## 11. Original contribution
 
-Stated precisely, and ordered by what actually survives an adversarial reviewer (strongest first):
+Stated precisely, strongest first:
 
-1. **A public, language-neutral conformance suite for idempotency correctness.** This is the most defensible and most original element. A reusable set of correctness vectors, atomic claim, fencing, crash/lease-reclaim, in-flight race, TTL, corrupt-record, and the per-surface cases, that runs against multiple backends. To be a contribution *to the field* rather than just idemkit's own test suite, it MUST be **consumable by other libraries**: shipped as a standalone package/repository with a runner that any implementation (in any language) can point at itself, not vendored inside idemkit. Industry-wide there is no such public artifact for idempotency. The bar that makes the EB-1A phrase true is concrete and falsifiable: *at least one third-party project runs these vectors against itself.* Until then it is a promising artifact; after that it is "a correctness standard the field references."
-2. **A single rigorously-tested core, exposed across three surfaces.** Atomic claim, storage-clock lease, fencing token, lease renewal, crash recovery, corrupt-record safety, and a race-free (notification-plus-poll) in-flight wait, implemented once and reused, rather than re-implemented and re-broken per surface.
-3. **Per-surface depth that closes enumerated, real failure modes** existing lightweight tools leave open (§6, §7.2, §8.2): the queue lease/visibility-timeout coupling and attempt-counting-across-release, and the AI explicit-key/normalization and serialization-safety problems.
-4. **First lightweight, framework-agnostic, conformance-verified implementation of the unified primitive across all three surfaces.** Note the careful wording. The claim is **not** "I was first to notice these are one primitive", Stripe, AWS Powertools (HTTP + events), and Restate already gestured at unification, so "I identified the synthesis" is weak and contestable. The claim is the *implementation*: a portable, dependency-light, publicly-conformance-tested realization spanning HTTP, queues, and AI tool calls, which does not exist today.
+1. **A public, language-neutral conformance suite for idempotency correctness.** A reusable set of correctness vectors — atomic claim, fencing, crash/lease-reclaim, in-flight race, TTL, corrupt-record, and the per-surface cases — that any backend or language implementation can run against itself. It ships with a runnable runner and language-neutral vectors in `conformance.yaml`; extracting it into a standalone repository, so other libraries can validate against it, is the next step (§13). No comparable public conformance artifact for idempotency exists elsewhere.
+2. **A single rigorously-tested core, exposed across three surfaces.** Atomic claim, storage-clock lease, fencing token, lease renewal, crash recovery, corrupt-record safety, and a race-free (notification-plus-poll) in-flight wait — implemented once and reused, rather than re-implemented and re-broken per surface.
+3. **Per-surface depth that closes enumerated, real failure modes** (§6, §7.2, §8.2): the queue lease/visibility-timeout coupling and attempt-counting across releases, and the AI explicit-key/normalization and serialization-safety problems.
+4. **A lightweight, framework-agnostic, conformance-verified implementation of the unified primitive across all three surfaces** — portable, dependency-light, and publicly conformance-tested across HTTP, queues, and AI tool calls.
 
-The single load-bearing engineering element underneath all of this is a **rigorously-tested atomic claim with crash recovery** (atomic claim + state machine + storage-clock lease + fencing + renewal). It is where the engineering value, the reason to take a dependency, and the protection of a user's money converge: an architect trusts it, a platform team adopts because of it, a user stops losing operations. Polished to the limit on even one surface it is already both a product and a contribution.
+The single load-bearing engineering element underneath all of this is a **rigorously-tested atomic claim with crash recovery** (atomic claim + state machine + storage-clock lease + fencing + renewal). It is where the engineering value converges: an architect trusts it, a platform team adopts because of it, a user stops losing operations.
 
-This is an engineering synthesis, a documented operational profile, and, most distinctively, a public conformance standard, backed by a working reference implementation. It is **not** a claim to have invented idempotency, **not** a claim of formal proof (it is rigorously tested, not proven), and **not** a claim of exactly-once delivery. Honest scope note for an immigration context: a specification and a reference implementation are necessary but not sufficient for "original contributions of major significance", that criterion is carried by *field adoption* (downloads, dependents, production users, independent expert testimony, talks, standards uptake), which is a year-plus of distribution this document does not by itself provide. The spec makes the contribution legible; adoption is what makes it significant.
+This is an engineering synthesis, a documented operational profile, and a public conformance suite, backed by a working reference implementation. It is **not** a claim to have invented idempotency, **not** a claim of formal proof (it is rigorously tested, not proven), and **not** a claim of exactly-once delivery.
 
 ---
 
@@ -527,14 +491,20 @@ This is an engineering synthesis, a documented operational profile, and, most di
 
 ## 13. Roadmap and versioning
 
-- **v0.1 (done):** HTTP surface, three backends, conformance suite, decorator + middleware. Implemented and tested.
-- **v0.2 (done):** queue consumer surface (§7), **with lease renewal / heartbeat (§5.3.1)**: the `renew()` Protocol method plus adapter heartbeating, since crash-safety on long handlers depends on it. Includes attempt-counting (§7.2, via broker receive count or a separate store) and the §7.4 conformance vectors, tested against a generic broker harness on real Redis + PostgreSQL.
-- **v0.3 (done):** AI tool-call surface (§8) with explicit-key support, the selector / `normalize_args` strict-mode rail (§8.2), the typed result serializers (§5.4: JSON / dataclass / pydantic v1+v2 / custom / opt-in pickle), and the §8.4 conformance vectors.
-- **Conformance as a standalone artifact (done, in-package):** the shared backend-Protocol vectors + a runner ship as `idemkit/conformance/` so any library whose backend implements the Protocol can validate itself (§11.1), with the language-neutral surface vectors in `conformance.yaml`. Extracting it into its own repo, and the goal-state of one third-party project testing against the suite, remain the open items.
-- **Hardening (in parallel):** typed exceptions (`IdempotencyConflict`/`PayloadMismatch`/…) and the client-retry contract (§6.3) as core, not roadmap; property-based testing (Hypothesis) and fault injection over the claim/lease/fence core; a strict/lint mode that flags an unsafe or constant `scope` and volatile-looking key fields (§5.1, §8.2).
-- **Later:** additional broker and backend adapters; cross-language ports reusing the conformance vectors.
+Implemented today (one pre-1.0, not-yet-published line):
 
-Behavioral clause numbers are preserved across revisions so test vectors and external references stay stable.
+- **HTTP surface** — decorator + middleware, five backends (in-memory, Redis, PostgreSQL, MongoDB, DynamoDB), and the conformance suite.
+- **Queue consumer surface (§7)** with lease renewal / heartbeat (§5.3.1): the `renew()` Protocol method plus adapter heartbeating (crash-safety on long handlers depends on it), attempt-counting (§7.2, via broker receive count or a separate store), and the §7.4 vectors, tested against a generic broker harness on the real backends.
+- **AI tool-call surface (§8)** with explicit-key support, the selector / `normalize_args` strict-mode rail (§8.2), the typed result serializers (§5.4: JSON / dataclass / pydantic v1+v2 / custom / opt-in pickle), and the §8.4 vectors.
+- **Property-based (Hypothesis) model checking and fault injection** over the claim/lease/fence core; typed exceptions (`IdempotencyConflict`/`PayloadMismatch`/…) and the client-retry contract (§6.3); a strict/lint mode that flags an unsafe or constant `scope` and volatile-looking key fields (§5.1, §8.2).
+- **Conformance vectors + runner** ship in-package (`idemkit/conformance/`) with the language-neutral surface vectors in `conformance.yaml`, so any backend implementing the Protocol can validate itself.
+
+Not yet:
+
+- Extracting the conformance suite into its own repository, and at least one third-party project running the vectors against itself.
+- Additional broker and backend adapters; cross-language ports reusing the conformance vectors.
+
+**Versioning.** The library is pre-1.0 and not yet published; treat the API as subject to change until 1.0. Behavioral clause numbers are preserved across revisions so test vectors and external references stay stable.
 
 ### 13.1 Licensing
 
@@ -550,8 +520,8 @@ The reference implementation code is **Apache-2.0** (see the repository `LICENSE
 - `draft-ietf-httpapi-idempotency-key-header-07`: HTTP wire format (see Appendix A §10)
 - Stripe idempotency design; Brandur Leach, *"Implementing Stripe-like Idempotency Keys in Postgres"*
 - AWS Lambda Powertools (Python) idempotency utility
-- Temporal, DBOS, Restate: durable-execution frameworks (the heavyweight alternative idemkit is deliberately lighter than)
-- `hono-idempotency` (@paveg), a careful HTTP idempotency middleware in the Node.js/Web-Standards ecosystem
+- Temporal, DBOS, Restate: durable-execution frameworks
+- `hono-idempotency` (@paveg): HTTP idempotency middleware in the Node.js / Web-Standards ecosystem
 
 ---
 

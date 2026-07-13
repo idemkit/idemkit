@@ -4,7 +4,7 @@ Runs as-is, no infrastructure: InMemoryBackend keeps dedup state in this process
 production swap in Postgres or Redis (state shared across workers), see ../shared/backends.py:
 
     from idemkit import PostgresBackend
-    backend = PostgresBackend.from_url("postgresql://localhost/app", table="idempotency_keys")
+    backend = PostgresBackend.from_url("postgresql://localhost/app")  # table = idemkit_records
 """
 
 from idemkit import InMemoryBackend, MethodConfig, idempotent

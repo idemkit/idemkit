@@ -1,9 +1,11 @@
 # idemkit examples
 
-Clean, copy-paste snippets. **Each file opens with the one problem it solves**, then
+Copy-paste snippets, one problem per file. **Each file opens with the one problem it solves**, then
 shows only the integration code (no demo scaffolding), uses `InMemoryBackend` so it
 runs with no setup, and is verified by a test in [`../tests/examples/`](../tests/examples/),
 so a broken example fails CI.
+
+> New to the vocabulary (*lease*, *fencing token*, *scope*, *dedup id*, *visibility timeout*)? See the [Glossary](../README.md#glossary).
 
 ```bash
 pip install -e ".[dev]"     # from python/
@@ -25,7 +27,7 @@ dev backend for real Redis/Postgres, see [`shared/backends.py`](shared/backends.
 | Protect only SOME FastAPI routes, and return a dict | `http/fastapi_route.py` |
 | Protect ONE route + catch typed exceptions | `http/route_decorator.py` |
 | Dedupe inbound webhooks on the provider's event id (Stripe/GitHub) | `http/webhook.py` |
-| Protect a Django REST Framework view (key on request.user) | `http/drf_view.py` |
+| Protect a Django REST Framework view (per-user via the DRF mixin) | `http/drf_view.py` |
 | Make the replayed response differ from the original | `http/response_hook.py` |
 | See every HTTP option | `http/all_options.py` |
 

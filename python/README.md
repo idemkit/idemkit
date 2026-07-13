@@ -4,7 +4,7 @@ Make any operation safe to retry. When a client retries, a broker redelivers, or
 
 One core covers the three places a retry turns into a duplicate: **HTTP requests**, **queue messages**, and **plain function calls** (agents, jobs, internal calls).
 
-> 🚧 **Pre-release (v0.1).** The API may still shift before 1.0. All three surfaces pass the same correctness suite on real Redis and Postgres; HTTP has the most production mileage so far.
+> 🚧 **Pre-release (v0.1).** The API may still shift before 1.0. All three surfaces pass the same correctness suite on all five backends (see below); HTTP has the most production mileage so far.
 
 ## What you get
 
@@ -19,15 +19,14 @@ New to the vocabulary (*lease*, *fencing token*, *scope*, *fingerprint*)? Each l
 
 ## Install
 
+Not on PyPI yet — install from source:
+
 ```bash
-pip install "idemkit[redis]"          # or [postgres], [mongo], [dynamodb], [asgi]
+git clone https://github.com/idemkit/idemkit && cd idemkit/python
+pip install -e ".[asgi,redis]"        # pick the extras you need
 ```
 
-> **Not on PyPI yet.** Until the first release, install from source:
-> ```bash
-> git clone https://github.com/idemkit/idemkit && cd idemkit/python
-> pip install -e ".[asgi,redis]"      # pick the extras you need
-> ```
+Once published, this becomes `pip install "idemkit[redis]"` (or `[postgres]`, `[mongo]`, `[dynamodb]`, `[asgi]`).
 
 The core has no third-party dependencies. Runs on Python 3.10 to 3.13, Redis 6+/Cluster, PostgreSQL 12+, MongoDB 4.2+, DynamoDB, any ASGI 3 or WSGI app.
 
@@ -38,19 +37,6 @@ The core has no third-party dependencies. Runs on Python 3.10 to 3.13, Redis 6+/
 | a client retrying `POST`/`PATCH` | the `Idempotency-Key` header | middleware (one line) | [HTTP](#http) |
 | a broker redelivering a message | the broker's message id | `IdempotentConsumer` | [Queue](#queue-consumers) |
 | a function called again (agent, job, internal call) | the function's arguments | the `@idempotent` decorator | [Method calls](#method-calls-and-ai-tools) |
-
----
-
-## How it compares
-
-The Python ecosystem has focused, single-purpose idempotency tools. idemkit trades that focus for one core that spans surfaces and backends, which changes a few concrete behaviors:
-
-- **Concurrent duplicate: wait vs error.** Several HTTP libraries (e.g. `asgi-idempotency-header`) return a `409` to a duplicate that arrives while the first request is still in flight. idemkit waits for the in-flight one and replays its result.
-- **Crash recovery: lease vs plain lock.** Lock-based dedupers (e.g. `celery-singleton`) release the lock only when the task finishes, so a `SIGKILL`, OOM, or timeout can leave a key locked. idemkit's claim is a storage-clock lease: it expires on its own, the next attempt reclaims it, and a fencing token rejects the dead worker's late write.
-- **Body mismatch.** Many response-caching libraries key on the idempotency value alone. idemkit also fingerprints the body and rejects a reused key that carries a different payload (`422`) instead of replaying the wrong response.
-- **One core, not one library per stack.** HTTP, queue, and method surfaces share the same framework-neutral core and five backends (in-memory, Redis, Postgres, Mongo, DynamoDB), sync or async — rather than a separate package per framework.
-
-These are trade-offs, not verdicts: a single-framework tool is smaller and simpler when it's all you need. idemkit is the fit when you want the same guarantees across surfaces and a crash-safe lease rather than a plain lock.
 
 ---
 
@@ -82,6 +68,8 @@ async def charge():
 curl -X POST localhost:8000/charge -H "Idempotency-Key: k1" -H "Content-Type: application/json" -d '{}'
 # run it again: same response, plus header  idempotency-replayed: true  (the handler did not run)
 ```
+
+On startup this logs a one-time `single-tenant mode` warning: with no `scope`, all callers share one namespace. That's fine for this local demo — you add `scope` when you go multi-tenant, next.
 
 For production, swap the backend and add `scope`:
 
@@ -117,11 +105,11 @@ The middleware returns `application/problem+json` on the unhappy paths. Branch o
 | Flask / Django / any WSGI (sync) | the whole app | `WSGIIdempotencyMiddleware` | [flask_wsgi.py](examples/http/flask_wsgi.py), [django_wsgi.py](examples/http/django_wsgi.py) |
 | FastAPI | one route that returns a `dict` and reads `request.state` | `contrib.fastapi.idempotent_route` (route class) | [fastapi_route.py](examples/http/fastapi_route.py) |
 | any ASGI | one route, and to catch typed exceptions (e.g. a webhook) | `Idempotency(...).protect` (decorator) | [route_decorator.py](examples/http/route_decorator.py) |
-| Django REST Framework | one view that reads `request.user` | `contrib.drf.idempotent_view` (mixin) | [drf_view.py](examples/http/drf_view.py) |
+| Django REST Framework | one view, scoped per authenticated user (a header in the standalone demo) | `contrib.drf.idempotent_view` (mixin) | [drf_view.py](examples/http/drf_view.py) |
 
 Rule of thumb: **whole app → middleware; one route → the route class (FastAPI) or `.protect` (any ASGI).** The full middleware walkthrough with scope, `body_fingerprint`, and a redactor is in [fastapi_middleware.py](examples/http/fastapi_middleware.py).
 
-Full HTTP option reference (you rarely set past `scope`): **[docs/configuration.md → HTTP options](docs/configuration.md#http-options)**.
+You rarely set past `scope`; the rest (`body_fingerprint`, `response_redactor`, `cacheable_status`, ...) is in **[docs/configuration.md → HTTP options](docs/configuration.md#http-options)**.
 
 ---
 
@@ -142,14 +130,14 @@ consumer = IdempotentConsumer(
 
 @consumer.handle
 async def process(msg) -> None:
-    await charge_customer(msg.body)          # runs once per message_id
+    await charge_customer(msg.body)          # process each message once, even on redelivery
 
 # in your poll loop:
 result = await consumer.dispatch(msg)
 broker.ack(msg) if result.action is ConsumerAction.ACK else broker.nack(msg)
 ```
 
-A sync worker (threaded SQS/Kafka, Celery) calls `consumer.dispatch_sync(msg)` instead. See [`examples/queue/getting_started.py`](examples/queue/getting_started.py), [`generic_broker.py`](examples/queue/generic_broker.py) (RabbitMQ/NATS), [`dead_letter.py`](examples/queue/dead_letter.py), and [`cache_result.py`](examples/queue/cache_result.py).
+A sync worker (a threaded SQS/Kafka consumer) calls `consumer.dispatch_sync(msg)` instead. See [`examples/queue/getting_started.py`](examples/queue/getting_started.py), [`generic_broker.py`](examples/queue/generic_broker.py) (RabbitMQ/NATS), [`dead_letter.py`](examples/queue/dead_letter.py), and [`cache_result.py`](examples/queue/cache_result.py). A **Celery task is a function call, not a queue consumer** — use `@idempotent_sync` under `@app.task` ([Method calls](#method-calls-and-ai-tools)).
 
 > **Size the visibility timeout above your handler's runtime.** The lease derives from `visibility_timeout_seconds`, and every at-least-once broker makes a message visible again if you don't ack within its window. If a handler — or a retry backoff, or a Celery `eta`/`countdown` — runs longer than the visibility timeout, the broker hands the same message to a *second* consumer while the first is still running. That is the usual source of "my task ran twice" (SQS default 30s, Celery Redis 1h). Set the visibility timeout above your handler's p99, keep any delay/backoff shorter than it, and — since the dedup record lives for `expires_after_seconds` — keep that window longer than the broker's whole redelivery horizon. idemkit still fences the late finisher, but you avoid the needless second run.
 
@@ -192,7 +180,7 @@ run_forever(consumer, sqs_client=sqs, queue_url=QUEUE, visibility_timeout=30)  #
 
 Kafka is the same shape with `from idemkit.contrib.kafka import kafka_consumer` (dedup id is `topic:partition:offset`, and you pass `group_id`). Neither imports a broker SDK. You install and create the client yourself. Runnable versions: [`queue/sqs.py`](examples/queue/sqs.py), [`queue/kafka.py`](examples/queue/kafka.py).
 
-Full `QueueConfig` reference (`max_attempts`, `on_exhausted`, `cache_result`, `validation_fingerprint`, ...): **[docs/configuration.md → Queue options](docs/configuration.md#queue-options)**.
+Every `QueueConfig` knob — `max_attempts`, `on_exhausted`, `cache_result`, `validation_fingerprint`, and the rest — is in **[docs/configuration.md → Queue options](docs/configuration.md#queue-options)**.
 
 ---
 
@@ -208,7 +196,7 @@ async def refund(*, order_id, amount):
     return await payments.refund(order_id, amount)   # runs once per (order_id, amount)
 ```
 
-Call it twice with the same `order_id` and `amount`, and the refund happens once. The second call replays the first result. Sync code uses `idempotent_sync`. Like HTTP, `scope` is optional: with none idemkit runs single-tenant and warns once, and you pass it to isolate callers (per user, or per agent session). See [`method/getting_started.py`](examples/method/getting_started.py), [`method/agent_loop.py`](examples/method/agent_loop.py), and [`method/sync_function.py`](examples/method/sync_function.py).
+Call it twice with the same `order_id` and `amount`, and the refund happens once. The second call replays the first result. Sync code uses `idempotent_sync` — including **Celery tasks**, where `@idempotent_sync` goes *under* `@app.task` (see [`method/sync_function.py`](examples/method/sync_function.py)). Like HTTP, `scope` is optional: with none idemkit runs single-tenant and warns once, and you pass it to isolate callers (per user, or per agent session). See [`method/getting_started.py`](examples/method/getting_started.py) and [`method/agent_loop.py`](examples/method/agent_loop.py).
 
 **Nested args:** a `key_fields` entry can be a dotted path — `key_fields=["order.id", "customer.email"]` walks `order["id"]` (dict) or `order.id` (object), no callback or expression language to learn.
 
@@ -232,13 +220,13 @@ async def refund(order_id: str, amount: int) -> dict:
 
 Anthropic tool use and OpenAI function calling work the same way. Parse the tool arguments, call the decorated function, feed the result back. The `tool_call_id` only links the result to the call, and idemkit dedupes on the arguments.
 
-Full `MethodConfig` reference (`version`, `normalize_args`, `require_key`, `cache_exceptions`, ...): **[docs/configuration.md → Method options](docs/configuration.md#method-options)**.
+For the rest — `version`, `normalize_args`, `require_key`, `cache_exceptions`, and the others — see **[docs/configuration.md → Method options](docs/configuration.md#method-options)**.
 
 ---
 
 ## Examples
 
-Clean, copy-paste snippets in [`examples/`](examples/), grouped by surface (`http/`, `queue/`, `method/`, `shared/`). Each shows only the integration code, uses `InMemoryBackend` so it needs no setup, and is covered by a test, so a broken example fails CI.
+Runnable snippets live in [`examples/`](examples/), grouped by surface (`http/`, `queue/`, `method/`, `shared/`). Each shows only the integration code, uses `InMemoryBackend` so it needs no setup, and is covered by a test, so a broken example fails CI.
 
 Browse the full "I want to..." index in [`examples/README.md`](examples/README.md). Each folder has a `getting_started.py`, an `all_options.py`, and one file per use case (SQS, DLQ, MCP tools, PII redaction, ...). Run them with `pytest tests/examples`.
 
@@ -297,7 +285,7 @@ idemkit is deliberately narrow. It gives **effectively-once**: at-least-once del
 
 | Cause | Which surface | Guard it with |
 |---|---|---|
-| A completion write is lost (storage blips at the instant the result is recorded) | all | pass the idempotency key downstream (Stripe-style) so the whole chain dedupes |
+| A completion write is lost (storage blips at the instant the result is recorded) | all | pass the idempotency key downstream so the whole chain dedupes |
 | An HTTP handler runs longer than `lease_ttl_seconds` (no heartbeat on HTTP) | HTTP only | size `lease_ttl_seconds` above your handler's p99, or push the key downstream |
 | A storage outage while `on_storage_error="fail_open"` | all | keep the default `fail_closed` (rejects instead of running unprotected) |
 | A non-2xx response (or a *raised* exception in method/queue) releases the claim | all | return a result instead of raising; add the status to `cacheable_status` to replay it |
@@ -305,11 +293,11 @@ idemkit is deliberately narrow. It gives **effectively-once**: at-least-once del
 
 In every one of these the stored record stays correct and duplicates still replay it — what can repeat is the **side effect** (the charge, the email). idemkit fences the record; it can't un-send an email a zombie worker already sent. The detail behind each row:
 
-- **It dedupes result delivery, not downstream side effects.** A handler that keeps running after it loses its claim (a network partition, a blocking call that ignores cancellation) can still fire its side effect. For money, pass the idempotency key downstream (Stripe-style) or use a transactional outbox.
+- **It dedupes result delivery, not downstream side effects.** A handler that keeps running after it loses its claim (a network partition, a blocking call that ignores cancellation) can still fire its side effect. For money, pass the idempotency key downstream or use a transactional outbox.
 - **One irreversible side effect per function or handler.** idemkit dedupes the whole call, not steps inside it. A function that does two side effects and crashes between them re-runs both on retry. Split them, or key the downstream.
 - **`fail_open` trades safety for availability.** On a storage outage it runs unprotected, so a duplicate can slip through during the outage. `fail_closed` (the default) rejects instead.
 - **`expires_after_seconds` bounds the replay window.** A retry after the TTL re-executes. Size it above your longest honest retry gap.
-- **Not a workflow engine.** For multi-step orchestration with recovery points, use Temporal, DBOS, or Restate. idemkit makes *one* operation safe to retry.
+- **Not a workflow engine.** For multi-step orchestration with recovery points, use a durable-execution engine. idemkit makes *one* operation safe to retry.
 - **Effectively-once, not exactly-once.** At-least-once delivery plus idempotent execution. No system delivers exactly-once.
 - **Postgres needs a reaper.** Correctness is fine without one (expiry is enforced on read), but the table grows unbounded until you schedule `idemkit pg-vacuum`. Redis keys self-expire, so Redis needs nothing.
 - **A raised exception is not cached (method/queue).** `@idempotent` caches a returned value; a handler that *raises* releases the claim so a retry re-runs it. That is right for transient errors, but a deterministic exception re-executes each retry. Return a result instead of raising if you want it replayed. (HTTP can replay a client error via `cacheable_status`.)
@@ -342,7 +330,7 @@ The correctness core (atomic claim, fencing, lease reclaim, in-flight wait, TTL 
 idemkit conformance --redis redis://localhost:6379 --postgres postgresql://user:pass@localhost/db
 ```
 
-Every surface's vectors pass on real Redis and PostgreSQL. The language-neutral descriptions live in [`spec/conformance.yaml`](../spec/conformance.yaml).
+Every surface's vectors pass on real Redis, PostgreSQL, MongoDB, and DynamoDB. The language-neutral descriptions live in [`spec/conformance.yaml`](../spec/conformance.yaml).
 
 Beyond the fixed vectors, three checks run against every backend:
 
@@ -366,6 +354,10 @@ The terms the rest of this README leans on:
 - **Fingerprint** — a hash of the request body (or chosen fields). If the same key arrives with a *different* fingerprint, idemkit rejects it (`422`) instead of replaying the wrong response. `body_fingerprint` lets you fingerprint only the stable fields.
 - **Lease** — a time-boxed hold on a key while your code runs. If the worker dies, the lease expires (decided by the storage server's own clock, so a skewed app clock can't misfire it) and the next attempt may reclaim the key. This is what stops a dead worker from blocking a key forever.
 - **Fencing token** — a token handed to whoever holds the current lease. If a zombie worker (one that lost its lease but kept running) tries to write its result, the token no longer matches and the write is rejected — so its late write can't overwrite the real result.
+- **Dedup id** (queues) — the field on a broker message that identifies "the same message," e.g. the SQS `MessageId` or Kafka `topic:partition:offset`. You tell idemkit how to read it via `dedup_id`; it plays the role the `Idempotency-Key` header plays on HTTP.
+- **Visibility timeout** (queues) — the window a broker hides a message after delivery, expecting an ack. idemkit derives the lease from it. If your handler outlives the window the broker redelivers the message *while it's still running* — the usual "ran twice" bug — so size it above your handler's p99.
+- **Heartbeat / renew** — a long queue or method handler periodically extends its lease while it runs, so a slow-but-alive handler keeps its claim and only a real crash lets another worker take over. (HTTP handlers don't heartbeat.)
+- **`fail_open` / `fail_closed`** — what happens when the backend is down. `fail_closed` (the default) rejects the request; `fail_open` runs it unprotected, so a duplicate can slip through during the outage.
 
 Deeper: **effectively-once** (at-least-once delivery + idempotent execution, the honest alternative to impossible exactly-once) is explained under [Limitations](#limitations-and-when-not-to-use-it); the mechanics live in [CORRECTNESS.md](docs/correctness.md).
 

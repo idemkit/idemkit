@@ -11,12 +11,12 @@
 #
 # The shared backend-Protocol vectors (atomic claim, fencing, lease reclaim,
 # in-flight wait, TTL, lease renewal) are implemented as a runnable suite in
-# `idemkit/conformance/` (spec §11.1) that any backend can point at itself.
+# `idemkit/conformance/` (spec §9, §13) that any backend can point at itself.
 #
 # Schema is intentionally simple; a conformance runner translates each scenario
 # into framework-specific test calls.
 
-version: 0.2-draft           # version of this vector file
+version: draft               # tracks the current pre-1.0 implementation
 spec: idemkit-unified-spec.md
 surfaces: [http, queue, ai_tool]
 

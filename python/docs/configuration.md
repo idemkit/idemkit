@@ -4,6 +4,8 @@
 
 The **datastore** (Postgres table, Redis namespace) is configured on the backend, not here: the backend is *where* dedup state lives; the config is *how* a duplicate is judged and replayed.
 
+> New to *lease*, *fencing token*, *visibility timeout*, *heartbeat*, or *fail_open*? See the [Glossary](../README.md#glossary).
+
 ## The three time settings
 
 They do three different jobs. The two that get confused are `lease_ttl_seconds` (the *running* phase) and `expires_after_seconds` (the *finished* result):
