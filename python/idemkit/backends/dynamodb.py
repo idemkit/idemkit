@@ -45,6 +45,7 @@ class DynamoBackend:
         endpoint_url: str | None = None,
         region_name: str = "us-east-1",
         create_table: bool = True,
+        lease_grace_seconds: float = 60.0,
         connect_timeout: float | None = None,
         read_timeout: float | None = None,
         max_retries: int | None = None,
@@ -57,6 +58,12 @@ class DynamoBackend:
         exist; set it to ``False`` in production and provision the table out of band so
         the runtime role needs no ``CreateTable`` permission.
 
+        ``lease_grace_seconds`` pads the DynamoDB ``ttl`` attribute past the logical
+        expiry (which is enforced on read via ``lease_until``). The ``ttl`` attribute
+        has one-second granularity, so without a pad a just-lapsed claim could be
+        TTL-reaped before the next attempt reclaims it, turning a ``lease_reclaimed``
+        into a ``new`` — the same grace Redis and Mongo apply.
+
         ``connect_timeout`` (default 5s), ``read_timeout`` (default 10s), and
         ``max_retries`` (default 3) fail fast like the other backends instead of
         hanging on botocore's 60s default; each default is applied only if you do not
@@ -68,6 +75,7 @@ class DynamoBackend:
         self._endpoint_url = endpoint_url
         self._region_name = region_name
         self._create_table = create_table
+        self._grace_seconds = lease_grace_seconds
         self._connect_timeout = connect_timeout
         self._read_timeout = read_timeout
         self._max_retries = max_retries
@@ -200,7 +208,7 @@ class DynamoBackend:
                         ":tok": token,
                         ":now": _num(now),
                         ":lu": _num(lease_until),
-                        ":ttl": int(lease_until),
+                        ":ttl": int(lease_until + self._grace_seconds),
                     },
                     ReturnValues="ALL_OLD",
                 )
@@ -288,7 +296,7 @@ class DynamoBackend:
                     ":tok": token,
                     ":now": _num(now),
                     ":lu": _num(lease_until),
-                    ":ttl": int(lease_until),
+                    ":ttl": int(lease_until + self._grace_seconds),
                 },
             )
         except Exception as e:
@@ -327,7 +335,7 @@ class DynamoBackend:
                     ":tok": claim_token,
                     ":now": _num(now),
                     ":exp": _num(expiry),
-                    ":ttl": int(expiry),
+                    ":ttl": int(expiry + self._grace_seconds),
                     ":st": response_status,
                     ":hd": response_headers,
                     ":bd": response_body,
@@ -381,7 +389,7 @@ class DynamoBackend:
                     ":claimed": "CLAIMED",
                     ":tok": claim_token,
                     ":lu": _num(lease_until),
-                    ":ttl": int(lease_until),
+                    ":ttl": int(lease_until + self._grace_seconds),
                 },
             )
             return True
