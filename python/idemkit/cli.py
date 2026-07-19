@@ -3,7 +3,7 @@
 Commands:
     idemkit init-pg <database-url>      Create idemkit_records table + indexes.
     idemkit pg-vacuum <database-url>    Delete expired records.
-    idemkit conformance [--redis URL] [--postgres URL]
+    idemkit conformance [--redis URL] [--postgres URL] [--mongo URL] [--dynamodb ENDPOINT]
                                        Run the shared-core conformance vectors
                                        against InMemory (always) and any backend
                                        whose URL is given. Exits non-zero on any
@@ -66,6 +66,16 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     conformance.add_argument("--redis", help="redis:// URL to also run the vectors against.")
     conformance.add_argument("--postgres", help="postgres:// URL to also run the vectors against.")
+    conformance.add_argument("--mongo", help="mongodb:// URL to also run the vectors against.")
+    conformance.add_argument(
+        "--dynamodb",
+        metavar="ENDPOINT",
+        help=(
+            "DynamoDB endpoint URL to also run the vectors against (e.g. "
+            "http://localhost:8000 for DynamoDB Local; credentials and region come "
+            "from the environment)."
+        ),
+    )
 
     return parser
 
@@ -96,13 +106,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "conformance":
-        return asyncio.run(_run_conformance(args.redis, args.postgres))
+        return asyncio.run(_run_conformance(args.redis, args.postgres, args.mongo, args.dynamodb))
 
     parser.print_help()
     return 2
 
 
-async def _run_conformance(redis_url: str | None, postgres_url: str | None) -> int:
+async def _run_conformance(
+    redis_url: str | None,
+    postgres_url: str | None,
+    mongo_url: str | None = None,
+    dynamodb_endpoint: str | None = None,
+) -> int:
     """Run the conformance suite against InMemory plus any configured backend."""
     from idemkit.backends.memory import InMemoryBackend
     from idemkit.conformance import BackendConformance
@@ -130,6 +145,16 @@ async def _run_conformance(redis_url: str | None, postgres_url: str | None) -> i
 
         await init_pg(postgres_url)
         await _run(PostgresBackend.from_url(postgres_url), aclose=True)
+
+    if mongo_url:
+        from idemkit.backends.mongo import MongoBackend
+
+        await _run(MongoBackend.from_url(mongo_url), aclose=True)
+
+    if dynamodb_endpoint:
+        from idemkit.backends.dynamodb import DynamoBackend
+
+        await _run(DynamoBackend(endpoint_url=dynamodb_endpoint), aclose=True)
 
     print()
     print("idemkit: conformance PASSED" if all_passed else "idemkit: conformance FAILED")

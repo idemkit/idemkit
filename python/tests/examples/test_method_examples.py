@@ -26,6 +26,16 @@ async def test_getting_started() -> None:
     assert spy.call_count == 1  # side effect ran once
 
 
+def test_cron_run_once() -> None:
+    mod = load_module("method/cron_run_once.py")
+    day = f"2026-07-{uuid.uuid4().hex[:6]}"  # unique per run (persistent backends)
+    with mock.patch.object(mod, "deliver_digest", wraps=mod.deliver_digest) as spy:
+        a = mod.send_daily_digest(run_date=day)
+        b = mod.send_daily_digest(run_date=day)  # a second scheduler firing the same slot
+    assert a == b  # replayed
+    assert spy.call_count == 1  # the digest went out once
+
+
 def test_sync_function() -> None:
     from idemkit import PayloadMismatch
 

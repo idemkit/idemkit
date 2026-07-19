@@ -49,6 +49,7 @@ dev backend for real Redis/Postgres, see [`shared/backends.py`](shared/backends.
 | My problem | File |
 |---|---|
 | Run a function once per set of arguments | `method/getting_started.py` |
+| Run a scheduled job once per window (cron / Celery Beat overlap) | `method/cron_run_once.py` |
 | Reject a reused key whose payload changed | `method/payload_validation.py` |
 | Stop an LLM agent from repeating a tool call | `method/agent_loop.py` |
 | Enforce idempotency on an MCP tool | `method/mcp.py` |

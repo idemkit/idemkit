@@ -107,6 +107,95 @@ def test_kafka_consumer_dedupes_by_topic_partition_offset():
     assert counter["n"] == 1
 
 
+def test_rabbitmq_consumer_dedupes_by_message_id():
+    from idemkit.contrib.rabbitmq import RabbitMessage, rabbitmq_consumer
+
+    counter = {"n": 0}
+    consumer = rabbitmq_consumer(backend=InMemoryBackend(), lease_seconds=300)
+
+    @consumer.handle
+    def process(msg) -> None:
+        counter["n"] += 1
+
+    msg = RabbitMessage(message_id="dup", body=b"x", redelivered=False)
+    consumer.dispatch_sync(msg)
+    consumer.dispatch_sync(RabbitMessage("dup", b"x", redelivered=True))  # redelivery
+    assert counter["n"] == 1
+
+
+def test_rabbitmq_run_forever_acks_and_requeues():
+    from idemkit.contrib.rabbitmq import rabbitmq_consumer, run_forever
+
+    consumer = rabbitmq_consumer(backend=InMemoryBackend(), lease_seconds=300)
+
+    @consumer.handle
+    def process(msg) -> None:
+        pass  # returns None -> ACK
+
+    acked: list[int] = []
+
+    class FakeChannel:
+        def __init__(self) -> None:
+            self._deliveries = [
+                (
+                    SimpleNamespace(delivery_tag=1, redelivered=False),
+                    SimpleNamespace(message_id="m-1"),
+                    b"x",
+                ),
+            ]
+
+        def basic_qos(self, prefetch_count: int) -> None:
+            pass
+
+        def basic_get(self, queue: str, auto_ack: bool):
+            return self._deliveries.pop(0) if self._deliveries else (None, None, None)
+
+        def basic_ack(self, delivery_tag: int) -> None:
+            acked.append(delivery_tag)
+
+        def basic_nack(self, delivery_tag: int, requeue: bool = True) -> None:
+            pass
+
+    channel = FakeChannel()
+    calls = {"n": 0}
+
+    def stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 2  # one delivery, then one empty poll, then stop
+
+    run_forever(consumer, channel=channel, queue="charges", stop=stop)
+    assert acked == [1]  # the one message was acked
+
+
+def test_pubsub_callback_dedupes_and_acks():
+    from idemkit.contrib.pubsub import pubsub_callback, pubsub_consumer
+
+    counter = {"n": 0}
+    consumer = pubsub_consumer(backend=InMemoryBackend(), ack_deadline_seconds=60)
+
+    @consumer.handle
+    def process(message) -> None:
+        counter["n"] += 1
+
+    outcomes: list[str] = []
+
+    class FakeMessage:
+        message_id = "dup"
+        data = b"x"
+
+        def ack(self) -> None:
+            outcomes.append("ack")
+
+        def nack(self) -> None:
+            outcomes.append("nack")
+
+    callback = pubsub_callback(consumer)
+    callback(FakeMessage())
+    callback(FakeMessage())  # redelivery
+    assert counter["n"] == 1
+    assert outcomes == ["ack", "ack"]  # both acked (first ran, second replayed)
+
+
 def test_mcp_idempotent_enforces_dedup_and_sets_hint():
     counter = {"n": 0}
     backend = InMemoryBackend()
