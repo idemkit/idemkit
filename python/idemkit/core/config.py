@@ -168,11 +168,11 @@ class IdempotencyConfig:
                 )
             if self.scope_mode == "warn":
                 _logger.warning(
-                    "idemkit: SINGLE-TENANT MODE: no `scope` configured, so ALL "
-                    "callers share one idempotency namespace. If your service has "
-                    "more than one user or tenant, this is a cross-tenant bug: set "
-                    "`scope`. To acknowledge single-tenant and silence this, set "
-                    "scope_mode='single_tenant'; to make it a hard error, set "
+                    "idemkit: running single-tenant — no `scope` is set, so all "
+                    "callers share one idempotency namespace. That's fine for local "
+                    "dev and single-tenant services; if you have more than one user "
+                    "or tenant, set `scope` so they don't collide. Silence this with "
+                    "scope_mode='single_tenant', or make it a hard error with "
                     "scope_mode='strict'. See spec §4.6."
                 )
 

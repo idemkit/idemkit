@@ -17,11 +17,12 @@ It reports, per backend:
 - **happy path** — a unique key: `claim` + `complete` (the cost of protecting a real call).
 - **replay** — a duplicate hitting an already-completed record (the cost idemkit adds to a retry).
 
-as ops/sec and p50/p99/p99.9 latency. What to expect from the *shape* of the numbers
-(not the magnitude): in-memory is sub-millisecond because there is no I/O; every real
-backend is one network round-trip per operation, so its latency floor is your ping to
-the store. DynamoDB uses a consistent read on the claim path, which is slower than an
-eventually-consistent read but is what makes the fencing correct.
+as ops/sec and p50/p99/p99.9 latency. Read them this way: **the in-memory row is
+idemkit's own overhead** — no I/O, just the claim/complete/fingerprint work, usually
+sub-millisecond. Every real backend adds one network round-trip on top, so the gap
+between in-memory and your store is the store's latency, not anything idemkit spends.
+(DynamoDB does a consistent read on the claim path — slower than eventually-consistent,
+but that's what makes fencing correct.)
 
 This measures speed only. Correctness is covered by the conformance suite and the
 property/fault/clock-skew tests — see [CORRECTNESS.md](../docs/correctness.md).

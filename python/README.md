@@ -153,7 +153,7 @@ A sync worker (a threaded SQS/Kafka consumer) calls `consumer.dispatch_sync(msg)
 
 `ACK` means remove it from the broker; `RETRY` means leave it for redelivery. A handler that returns `None` records a "processed" marker, so its redelivery is a no-op skip.
 
-**SQS and Kafka come wired.** `idemkit.contrib` presets the dedup id, attempt count, and ack glue so you don't hand-roll it:
+**Your broker comes wired.** `idemkit.contrib` presets the dedup id, attempt count, and ack glue for SQS, Kafka, RabbitMQ, and Google Pub/Sub so you don't hand-roll it:
 
 ```python
 import boto3
@@ -178,7 +178,7 @@ def process(msg) -> None:
 run_forever(consumer, sqs_client=sqs, queue_url=QUEUE, visibility_timeout=30)  # deletes on ack
 ```
 
-Kafka is the same shape with `from idemkit.contrib.kafka import kafka_consumer` (dedup id is `topic:partition:offset`, and you pass `group_id`). Neither imports a broker SDK. You install and create the client yourself. Runnable versions: [`queue/sqs.py`](examples/queue/sqs.py), [`queue/kafka.py`](examples/queue/kafka.py).
+The others are the same shape: `contrib.kafka.kafka_consumer` (dedup on `topic:partition:offset`, pass `group_id`), `contrib.rabbitmq.rabbitmq_consumer` (dedup on the AMQP `message_id`), `contrib.pubsub.pubsub_consumer` (dedup on the Pub/Sub `message_id`). None imports a broker SDK — you install and create the client yourself. Runnable SQS/Kafka: [`queue/sqs.py`](examples/queue/sqs.py), [`queue/kafka.py`](examples/queue/kafka.py); for anything else, [`queue/generic_broker.py`](examples/queue/generic_broker.py).
 
 Every `QueueConfig` knob — `max_attempts`, `on_exhausted`, `cache_result`, `validation_fingerprint`, and the rest — is in **[docs/configuration.md → Queue options](docs/configuration.md#queue-options)**.
 
@@ -268,7 +268,7 @@ The knobs you might actually reach for:
 | `on_storage_error` | `"fail_closed"` | Switch to `fail_open` only if availability beats dedup. |
 | `event_handlers` | `[]` | Wire a ready-made metrics/logging handler, or your own. |
 
-Full reference, the three time-settings explained, and the observability/alerting guide: **[docs/configuration.md](docs/configuration.md)**. Ready-made exporters:
+Full reference and the three time-settings explained: **[docs/configuration.md](docs/configuration.md)**. What to alert on, the reaper, and what to pin to: **[docs/operations.md](docs/operations.md)**. Ready-made exporters:
 
 ```python
 from idemkit.contrib.prometheus import prometheus_handler   # pip install "idemkit[prometheus]"

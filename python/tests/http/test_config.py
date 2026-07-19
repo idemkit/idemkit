@@ -15,7 +15,7 @@ def test_missing_caller_identity_runs_single_tenant_with_warning(caplog) -> None
     with caplog.at_level(logging.WARNING):
         config = IdempotencyConfig()
     assert config.scope is None
-    assert any("SINGLE-TENANT MODE" in r.message for r in caplog.records)
+    assert any("running single-tenant" in r.message for r in caplog.records)
 
 
 def test_strict_identity_hard_fails_without_caller_identity() -> None:
@@ -30,7 +30,7 @@ def test_caller_identity_optional_silences_warning(caplog) -> None:
     with caplog.at_level(logging.WARNING):
         config = IdempotencyConfig(scope_mode="single_tenant")
     assert config.scope is None
-    assert not any("SINGLE-TENANT MODE" in r.message for r in caplog.records)
+    assert not any("running single-tenant" in r.message for r in caplog.records)
 
 
 def test_explicit_caller_identity_works() -> None:
