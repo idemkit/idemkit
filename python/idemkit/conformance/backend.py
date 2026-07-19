@@ -221,12 +221,14 @@ class BackendConformance:
         assert result is None
 
     async def _completed_ttl_expiry(self) -> None:
+        # The TTL window must comfortably outlast a backend round-trip, or a slow
+        # store can expire the record before the "still completed" check below.
         key = _k("ttl")
         first = await self.backend.claim(key, "fp", 1, 30.0)
-        await self.backend.complete(key, _token(first), 200, {}, b"x", 0.1)
+        await self.backend.complete(key, _token(first), 200, {}, b"x", 1.0)
         immediate = await self.backend.claim(key, "fp", 1, 30.0)
         assert immediate.result == ClaimResultType.ALREADY_COMPLETED
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(1.5)
         after = await self.backend.claim(key, "fp", 1, 30.0)
         assert after.result == ClaimResultType.NEW_CLAIMED
 
