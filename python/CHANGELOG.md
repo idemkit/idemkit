@@ -9,6 +9,18 @@ minor version may carry a breaking change, and any such change is called out her
 
 Nothing yet.
 
+## [0.1.1] - 2026-07-26
+
+### Added
+- `DynamoBackend.from_url(endpoint_url)`, for parity with the `from_url`
+  constructors on the other backends.
+
+### Fixed
+- The "volatile-looking field" warning no longer fires on ordinary business keys
+  such as `order_id` or `customer_id`. It now matches only known per-call /
+  per-request id names (`request_id`, `trace_id`, `tool_call_id`, and similar), so
+  the getting-started example no longer warns about its own key.
+
 ## [0.1.0] - 2026-07-26
 
 First public release. Pre-1.0: the API may still shift, and a minor version may

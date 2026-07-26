@@ -87,6 +87,33 @@ class DynamoBackend:
 
         self._init_lock = asyncio.Lock()
 
+    @classmethod
+    def from_url(
+        cls,
+        url: str,
+        *,
+        table: str = DEFAULT_TABLE,
+        region_name: str = "us-east-1",
+        create_table: bool = True,
+        lease_grace_seconds: float = 60.0,
+        **client_kwargs: Any,
+    ) -> DynamoBackend:
+        """Construct from a DynamoDB endpoint URL, for parity with the other backends.
+
+        ``url`` is the DynamoDB endpoint, e.g. ``http://localhost:8000`` for DynamoDB
+        Local or LocalStack. On real AWS you usually need no endpoint: build
+        ``DynamoBackend(region_name=...)`` directly and let botocore resolve it. Extra
+        keyword arguments go to the aioboto3 resource (e.g. credentials).
+        """
+        return cls(
+            table=table,
+            endpoint_url=url,
+            region_name=region_name,
+            create_table=create_table,
+            lease_grace_seconds=lease_grace_seconds,
+            **client_kwargs,
+        )
+
     async def _ensure_table(self) -> Any:
         if self._table is not None:
             return self._table

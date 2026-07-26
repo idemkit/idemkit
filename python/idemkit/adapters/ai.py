@@ -661,8 +661,29 @@ def _canonical_hash(selected: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# Field NAMES that read as per-call / per-request identifiers: they change on every
+# retry, so they must never be the idempotency key. A business key that merely ends
+# in "_id" (order_id, customer_id, payment_id) is the RIGHT thing to key on and is
+# deliberately NOT in this set.
 _VOLATILE_NAMES = frozenset(
-    {"request_id", "requestid", "nonce", "timestamp", "ts", "idempotency_key"}
+    {
+        "request_id",
+        "requestid",
+        "trace_id",
+        "traceid",
+        "span_id",
+        "spanid",
+        "correlation_id",
+        "correlationid",
+        "tool_call_id",
+        "toolcallid",
+        "call_id",
+        "callid",
+        "nonce",
+        "timestamp",
+        "ts",
+        "idempotency_key",
+    }
 )
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -709,10 +730,14 @@ def _value_looks_like_call_id(value: str) -> bool:
 def _name_looks_volatile(name: str) -> bool:
     """Whether a field name alone (no value) reads as volatile.
 
-    Used at decoration time, where only the names in ``key_fields`` are known.
+    Used at decoration time, where only the names in ``key_fields`` are known. It
+    matches KNOWN per-call / per-request id names (request_id, trace_id,
+    tool_call_id, ...), not every field ending in ``_id``: a business key like
+    ``order_id`` or ``customer_id`` is exactly what you should key on, so it must
+    not warn.
     """
     lowered = name.lower()
-    if lowered in _VOLATILE_NAMES or lowered.endswith("_id"):
+    if lowered in _VOLATILE_NAMES:
         return True
     return "timestamp" in lowered or "nonce" in lowered
 

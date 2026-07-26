@@ -527,6 +527,24 @@ def test_volatile_field_named_in_key_fields_warns(backend) -> None:
             return {"r": request_id}
 
 
+def test_business_id_key_does_not_warn(backend) -> None:
+    """A business key ending in _id (order_id, customer_id) is the RIGHT key to
+    dedupe on and must NOT trip the volatile-field warning (fixed false positive)."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any UserWarning here becomes a test failure
+
+        @idempotent(
+            backend=backend,
+            config=MethodConfig(scope=lambda a: "s", key_fields=["order_id", "customer_id"]),
+        )
+        async def charge(*, order_id, customer_id):
+            return {"order_id": order_id}
+
+    assert charge is not None
+
+
 def test_key_fields_allowed_with_var_keyword(backend) -> None:
     """A tool taking **kwargs can name key fields not in its explicit signature —
     we can't validate those, so don't reject them."""
