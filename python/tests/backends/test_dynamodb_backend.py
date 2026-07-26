@@ -29,6 +29,17 @@ def _dynamo(table: str, **kwargs):
     )
 
 
+def test_from_url_matches_direct_construction() -> None:
+    """`from_url` exists for parity with the other backends and maps the URL to the
+    endpoint, without connecting (lazy)."""
+    from idemkit.backends.dynamodb import DynamoBackend
+
+    backend = DynamoBackend.from_url(DYNAMODB_ENDPOINT, table="idempotency_keys")
+    assert backend._endpoint_url == DYNAMODB_ENDPOINT
+    assert backend._table_name == "idempotency_keys"
+    assert backend._create_table is True
+
+
 def _k(suffix: str) -> str:
     return f"dynamo-{suffix}-{uuid.uuid4().hex}"
 
