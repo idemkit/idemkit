@@ -1,8 +1,10 @@
 # idemkit
 
+[![PyPI](https://img.shields.io/pypi/v/idemkit.svg)](https://pypi.org/project/idemkit/)
 [![CI](https://github.com/idemkit/idemkit/actions/workflows/ci.yml/badge.svg)](https://github.com/idemkit/idemkit/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
+[![Downloads](https://img.shields.io/pypi/dm/idemkit.svg)](https://pypi.org/project/idemkit/)
 
 **Make any operation safe to retry. No double charges, no duplicate emails, no repeated side effects.**
 

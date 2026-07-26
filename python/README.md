@@ -1,8 +1,10 @@
 # idemkit for Python
 
+[![PyPI](https://img.shields.io/pypi/v/idemkit.svg)](https://pypi.org/project/idemkit/)
 [![CI](https://github.com/idemkit/idemkit/actions/workflows/ci.yml/badge.svg)](https://github.com/idemkit/idemkit/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](../LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
+[![Downloads](https://img.shields.io/pypi/dm/idemkit.svg)](https://pypi.org/project/idemkit/)
 
 Make any operation safe to retry. When a client retries, a broker redelivers, or an agent re-plans, idemkit runs your code **once per key** and replays the first result to the duplicates, even when they arrive at the same instant.
 
@@ -25,14 +27,11 @@ New to the vocabulary (*lease*, *fencing token*, *scope*, *fingerprint*)? Each l
 
 ## Install
 
-Not on PyPI yet — install from source:
-
 ```bash
-git clone https://github.com/idemkit/idemkit && cd idemkit/python
-pip install -e ".[asgi,redis]"        # pick the extras you need
+pip install "idemkit[redis]"     # or [postgres], [mongo], [dynamodb], [asgi]
 ```
 
-Once published, this becomes `pip install "idemkit[redis]"` (or `[postgres]`, `[mongo]`, `[dynamodb]`, `[asgi]`).
+Working on idemkit itself? Install from source instead: see [Contributing](#contributing).
 
 The core has no third-party dependencies. Runs on Python 3.10 to 3.13, Redis 6+/Cluster, PostgreSQL 12+, MongoDB 4.2+, DynamoDB, any ASGI 3 or WSGI app.
 
@@ -55,7 +54,7 @@ The middleware wraps the whole app, but by default it only acts on `POST` and `P
 Works in 30 seconds, no infrastructure (the `[asgi]` extra ships Starlette; this snippet also uses FastAPI):
 
 ```bash
-pip install -e ".[asgi]" fastapi uvicorn
+pip install "idemkit[asgi]" fastapi uvicorn
 ```
 
 ```python
