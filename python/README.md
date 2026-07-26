@@ -1,8 +1,14 @@
 # idemkit for Python
 
+[![CI](https://github.com/idemkit/idemkit/actions/workflows/ci.yml/badge.svg)](https://github.com/idemkit/idemkit/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](../LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
+
 Make any operation safe to retry. When a client retries, a broker redelivers, or an agent re-plans, idemkit runs your code **once per key** and replays the first result to the duplicates, even when they arrive at the same instant.
 
 One core covers the three places a retry turns into a duplicate: **HTTP requests**, **queue messages**, and **plain function calls** (agents, jobs, internal calls).
+
+Why a key on its own is not enough is the subject of [Why an idempotency key isn't an idempotency guarantee](https://www.infoworld.com/article/4191741/why-an-idempotency-key-isnt-an-idempotency-guarantee.html). The article names four assumptions a correct design has to hold; [The four assumptions, in code](docs/the-four-assumptions.md) maps each one to the exact place idemkit implements it.
 
 > 🚧 **Pre-release (v0.1).** The API may still shift before 1.0. All three surfaces pass the same correctness suite on all five backends (see below); HTTP has the most production mileage so far.
 

@@ -1,8 +1,14 @@
 # idemkit
 
+[![CI](https://github.com/idemkit/idemkit/actions/workflows/ci.yml/badge.svg)](https://github.com/idemkit/idemkit/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](./LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
+
 **Make any operation safe to retry. No double charges, no duplicate emails, no repeated side effects.**
 
 When a client retries a request, a broker redelivers a message, or an AI agent repeats a step, idemkit runs your code once and gives the first result back to the duplicates. Same idea in three places: HTTP requests, queue messages, and function calls.
+
+The reasoning behind it is written up in [Why an idempotency key isn't an idempotency guarantee](https://www.infoworld.com/article/4191741/why-an-idempotency-key-isnt-an-idempotency-guarantee.html). Short version: the key alone does not stop a double charge, the design around it does. idemkit is that design, packaged as a library.
 
 ## What it gives you
 
