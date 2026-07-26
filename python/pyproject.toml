@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "idemkit"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Make any operation safe to retry: crash-safe idempotency for HTTP requests, queue messages, and function calls, on Redis, Postgres, MongoDB, or DynamoDB."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -72,6 +72,9 @@ Documentation = "https://github.com/idemkit/idemkit/blob/main/python/README.md"
 Specification = "https://github.com/idemkit/idemkit/blob/main/spec/idemkit-unified-spec.md"
 Changelog = "https://github.com/idemkit/idemkit/blob/main/python/CHANGELOG.md"
 Issues = "https://github.com/idemkit/idemkit/issues"
+
+[tool.hatch.version]
+path = "idemkit/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["idemkit"]
