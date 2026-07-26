@@ -59,6 +59,7 @@ dev backend for real Redis/Postgres, see [`shared/backends.py`](shared/backends.
 | Catch idemkit's typed exceptions | `method/exceptions.py` |
 | Replay a deterministic failure instead of re-running it | `method/error_replay.py` |
 | Skip the backend round-trip for a hot key in one process | `method/local_cache.py` |
+| Reconcile a money path where your record and the provider can disagree | `method/reconciliation.py` |
 | See every method option | `method/all_options.py` |
 
 ## `shared/`: any surface

@@ -4,6 +4,8 @@
 
 When a client retries a request, a broker redelivers a message, or an AI agent repeats a step, idemkit runs your code once and gives the first result back to the duplicates. Same idea in three places: HTTP requests, queue messages, and function calls.
 
+The reasoning behind it is written up in [Why an idempotency key isn't an idempotency guarantee](https://www.infoworld.com/article/4191741/why-an-idempotency-key-isnt-an-idempotency-guarantee.html). Short version: the key alone does not stop a double charge, the design around it does. idemkit is that design, packaged as a library.
+
 ## What it gives you
 
 - **One atomic claim.** Concurrent duplicates resolve to exactly one run and the rest replay its result — no check-then-set gap where two requests both see "not done" and both execute.

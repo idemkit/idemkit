@@ -196,6 +196,29 @@ def test_pubsub_callback_dedupes_and_acks():
     assert outcomes == ["ack", "ack"]  # both acked (first ran, second replayed)
 
 
+def test_reconciliation_handler_fires_only_on_uncertain_completions():
+    from idemkit import IdempotencyEvent
+    from idemkit.contrib.reconciliation import NEEDS_RECONCILIATION, reconciliation_handler
+    from idemkit.core.state import Decision
+
+    caught: list = []
+    handler = reconciliation_handler(caught.append)
+    for decision in Decision:
+        handler(
+            IdempotencyEvent(
+                decision=decision,
+                effective_key="hashed-key",
+                backend_name="InMemoryBackend",
+                fingerprint_version=1,
+                latency_seconds=0.0,
+            )
+        )
+    flagged = {event.decision for event in caught}
+    assert flagged == set(NEEDS_RECONCILIATION)  # exactly the uncertain-completion set
+    assert Decision.NEW not in flagged  # a clean run is never flagged
+    assert Decision.REPLAYED not in flagged  # a replay is never flagged
+
+
 def test_mcp_idempotent_enforces_dedup_and_sets_hint():
     counter = {"n": 0}
     backend = InMemoryBackend()

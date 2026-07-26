@@ -26,6 +26,18 @@ async def test_getting_started() -> None:
     assert spy.call_count == 1  # side effect ran once
 
 
+async def test_reconciliation() -> None:
+    mod = load_module("method/reconciliation.py")
+    order = f"ord-{uuid.uuid4().hex[:8]}"  # unique per run
+    with mock.patch.object(mod, "charge_provider", wraps=mod.charge_provider) as spy:
+        a = await mod.charge(order_id=order, amount=500)
+        b = await mod.charge(order_id=order, amount=500)  # duplicate replays
+    assert a == b
+    assert spy.call_count == 1  # the provider was charged once
+    assert a["provider_key"] == order  # the key was passed downstream
+    assert mod.needs_reconciliation == []  # a clean run flags nothing to reconcile
+
+
 def test_cron_run_once() -> None:
     mod = load_module("method/cron_run_once.py")
     day = f"2026-07-{uuid.uuid4().hex[:6]}"  # unique per run (persistent backends)
