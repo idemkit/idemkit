@@ -12,7 +12,7 @@ One core covers the three places a retry turns into a duplicate: **HTTP requests
 
 Why a key on its own is not enough is the subject of [Why an idempotency key isn't an idempotency guarantee](https://www.infoworld.com/article/4191741/why-an-idempotency-key-isnt-an-idempotency-guarantee.html). The article names four assumptions a correct design has to hold; [The four assumptions, in code](docs/the-four-assumptions.md) maps each one to the exact place idemkit implements it.
 
-> 🚧 **Pre-release (v0.1).** The API may still shift before 1.0. All three surfaces pass the same correctness suite on all five backends (see below); HTTP has the most production mileage so far.
+> **Stable (v1.0).** The public API follows semantic versioning: a breaking change bumps the major. Public API = the names exported from `idemkit`, the `HttpConfig` / `QueueConfig` / `MethodConfig` config objects, the backend `Protocol`, and the `idemkit` CLI. All three surfaces pass the same correctness suite on all five backends (see below); HTTP has the most production mileage so far.
 
 ## What you get
 
