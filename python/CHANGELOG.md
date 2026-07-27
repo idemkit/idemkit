@@ -2,14 +2,21 @@
 
 All notable changes to the idemkit Python package are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/). The project follows
-[Semantic Versioning](https://semver.org/) once it reaches 1.0; before then, a
-minor version may carry a breaking change, and any such change is called out here.
+[Semantic Versioning](https://semver.org/) as of 1.0: a breaking change bumps the
+major version, and any such change is called out here.
 
 ## [Unreleased]
 
 Nothing yet.
 
-## [0.1.1] - 2026-07-26
+## [1.0.0] - 2026-07-27
+
+First stable release. The public API is now covered by semantic versioning: a
+breaking change bumps the major version. The public API is the names exported from
+`idemkit` (its `__all__`), the `HttpConfig` / `QueueConfig` / `MethodConfig` config
+objects, the backend `Protocol` (`claim` / `complete` / `release` / `renew` /
+`wait_for_completion`), and the `idemkit` CLI. Internals may change without a major
+bump.
 
 ### Added
 - `DynamoBackend.from_url(endpoint_url)`, for parity with the `from_url`
