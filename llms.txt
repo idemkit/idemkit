@@ -1,0 +1,29 @@
+# idemkit
+
+> idemkit is a specification of crash-safe idempotency with a reference implementation in Python. It makes any operation safe to retry: an HTTP request, a queue message, or a function call runs once per key and replays the first result to duplicates, even when they race or a worker crashes.
+
+One core across three surfaces (HTTP middleware, a queue consumer, and an `@idempotent` decorator) on five backends (in-memory, Redis, Postgres, MongoDB, DynamoDB). It is effectively-once, not exactly-once, and documents exactly when a side effect can still repeat. Install with `pip install idemkit`, plus a backend extra such as `idemkit[redis]`, `idemkit[postgres]`, `idemkit[mongo]`, `idemkit[dynamodb]`, or `idemkit[asgi]` for the HTTP middleware.
+
+## Docs
+
+- [Python guide](https://github.com/idemkit/idemkit/blob/main/python/README.md): install, the three surfaces (HTTP, queue, method/AI tool), backends, configuration, and limitations.
+- [The four assumptions, in code](https://github.com/idemkit/idemkit/blob/main/python/docs/the-four-assumptions.md): claim, intent, memory, boundary, each mapped to the code that implements it.
+- [How idemkit is verified](https://github.com/idemkit/idemkit/blob/main/python/docs/correctness.md): conformance suite, property-based tests, fault injection, and clock-skew tests, run against real backends.
+- [Configuration reference](https://github.com/idemkit/idemkit/blob/main/python/docs/configuration.md): every option, per surface.
+- [Operations](https://github.com/idemkit/idemkit/blob/main/python/docs/operations.md): what to alert on, the Postgres reaper, versioning and stability.
+- [Runnable examples](https://github.com/idemkit/idemkit/tree/main/python/examples): HTTP (FastAPI, Flask, Django), queues (SQS, Kafka, RabbitMQ, Pub/Sub), and method / AI tool calls.
+
+## Specification
+
+- [idemkit spec](https://github.com/idemkit/idemkit/blob/main/spec/idemkit-unified-spec.md): the language-neutral behavioral contract.
+- [Conformance vectors](https://github.com/idemkit/idemkit/blob/main/spec/conformance.yaml): language-neutral correctness checks any implementation can validate itself against.
+
+## When to use it
+
+- Use idemkit when a duplicate running twice costs you a double charge, a duplicate email, or any repeated external side effect, under client retries, at-least-once queue redelivery, or agent and tool re-runs.
+- You do not need it when the side effect is a write to the same SQL database: a single transaction with `INSERT ... ON CONFLICT` gives you exactly-once there.
+
+## Background
+
+- [Why an idempotency key isn't an idempotency guarantee](https://www.infoworld.com/article/4191741/why-an-idempotency-key-isnt-an-idempotency-guarantee.html): the article behind idemkit.
+- [idemkit on PyPI](https://pypi.org/project/idemkit/)

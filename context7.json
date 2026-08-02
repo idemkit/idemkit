@@ -1,0 +1,22 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "idemkit",
+  "description": "Crash-safe idempotency for Python: run any operation once per key across HTTP, queues, and function calls, on Redis, Postgres, Mongo, DynamoDB, or in-memory.",
+  "branch": "main",
+  "excludeFolders": [
+    "python/tests",
+    "python/.hypothesis",
+    "python/build",
+    "python/dist",
+    "python/htmlcov"
+  ],
+  "rules": [
+    "Install idemkit plus the backend extra you need: pip install \"idemkit[redis]\" (also [postgres], [mongo], [dynamodb], or [asgi] for the HTTP middleware). The core has no dependencies.",
+    "Pick the surface by where the duplicate comes from: IdempotencyMiddleware (or WSGIIdempotencyMiddleware) for HTTP on FastAPI/Flask/Django, IdempotentConsumer for at-least-once queues, and the @idempotent / @idempotent_sync decorator for plain functions, Celery tasks, and AI/MCP tool calls.",
+    "For method and AI-tool calls, dedupe on the arguments with MethodConfig(key_fields=[...]). Never key on a per-call id such as an LLM tool_call_id; it changes every turn and defeats deduplication.",
+    "Use a real backend (RedisBackend, PostgresBackend, MongoBackend, DynamoBackend) in production. InMemoryBackend is for development and tests only; its state is not shared across workers.",
+    "Set a scope on multi-tenant services (for example HttpConfig(scope=lambda req: req.headers.get('x-user-id'))) so different callers do not share one idempotency namespace.",
+    "idemkit is effectively-once, not exactly-once. If the side effect is a write to the same SQL database, a single transaction with INSERT ON CONFLICT is simpler and gives exactly-once; idemkit is for external side effects like charging a provider or sending an email, and there you should also pass the idempotency key downstream.",
+    "Configure each surface with exactly one config object passed as config=: HttpConfig, QueueConfig, or MethodConfig. The datastore (table, namespace) is configured on the backend, not on the config."
+  ]
+}
