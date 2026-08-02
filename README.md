@@ -40,27 +40,42 @@ For production, swap `InMemoryBackend` for `RedisBackend` or `PostgresBackend` a
 - **One core, three surfaces, five backends.** HTTP, queues, and function calls, on in-memory, Redis, Postgres, Mongo, or DynamoDB, sync or async.
 - **Verified, not just claimed.** Every guarantee runs as a conformance test against real Redis, Postgres, Mongo, and DynamoDB, and it stays honest that this is effectively-once, not exactly-once, with the limits written down.
 
-## Why not just use SETNX?
+## Why not just do it yourself?
 
-Because the safe version is more than one write. Here is the version most of us reach for first:
+The obvious first version, check if you've seen the key and replay the stored response, looks fine and falls apart under real traffic:
 
 ```python
 async def charge(key, body):
-    if not await redis.setnx(key, "running"):     # claim the key
-        return await redis.get(f"{key}:result")   # someone else has it, replay
-    result = await do_charge(body)                # the side effect
+    if await redis.get(key):                      # seen this key? replay
+        return await redis.get(f"{key}:result")
+    result = await do_charge(body)                # external charge (a payment API)
+    await redis.set(key, "done")
     await redis.set(f"{key}:result", result)
     return result
 ```
 
-It looks right, and it breaks in four ways idemkit is built to handle:
+- Two requests arrive at the same time, both see the key isn't there yet, and both charge the card.
+- A worker crashes after charging but before marking the key done, so a retry charges the card again.
+- The same key sent with a different amount replays the first response.
 
-1. **A duplicate that lands mid-charge gets nothing.** While the first call is still charging, the second finds the key already set but no result written yet, so it hands back an empty response. To answer it correctly, it has to wait for the first call to finish.
-2. **A crash leaves the key stuck.** If the worker dies after `do_charge` but before writing the result, the key sits at `"running"` forever. Retries hang, or you clear it by hand and charge the card again. What's missing is a lease that expires on its own.
-3. **A slow worker overwrites a good result.** Add a TTL so stuck keys expire, and a worker that wakes up after its TTL writes its stale result over a newer one. That takes a fencing token to reject the late write.
-4. **The same key with a different body replays the wrong answer.** Key on the token alone and a $500 request cheerfully gets the $200 response back. You fingerprint the request and reject the mismatch.
+Doing it right means an atomic claim, a lease that expires, a fencing token, and a way to wait for a call that's still running. It's a lot more than the lines above, and these bugs only surface under load or during a crash, where a test won't catch them.
 
-idemkit does all four, on every backend. It's still effectively-once, not exactly-once, and it doesn't pretend otherwise: if a worker charges the card and then dies before recording it, idemkit throws out the dead worker's write but can't un-charge the card. For money, pass the key downstream too.
+idemkit is that, done for you. The same charge, deduped and crash-safe:
+
+```python
+from idemkit import idempotent, RedisBackend, MethodConfig
+
+@idempotent(backend=RedisBackend.from_url("redis://..."),
+            config=MethodConfig(key_fields=["order_id"]))
+async def charge(*, order_id, amount):
+    return await do_charge(order_id, amount)   # runs once per order_id, safely
+```
+
+```bash
+pip install "idemkit[redis]"
+```
+
+It runs once per key even when requests race or a worker dies, the same way on in-memory, Redis, Postgres, Mongo, or DynamoDB, [tested against all of them](python/docs/correctness.md). The one honest limit: effectively-once, not exactly-once.
 
 ## Background and details
 
